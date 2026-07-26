@@ -1,0 +1,17 @@
+track_id,crossing_any,crossing_crosswalk,crossing_non_crosswalk,wrong_way
+60,False,False,False,NA
+62,True,False,True,NA
+69,False,False,False,NA
+72,True,False,True,NA
+73,False,False,False,NA
+79,False,False,False,NA
+80,False,False,False,NA
+84,False,False,False,NA
+90,False,False,False,NA
+91,False,False,False,NA
+97,False,False,False,NA
+100,False,False,False,NA
+107,False,False,False,NA
+108,False,False,False,NA
+110,False,False,False,NA
+117,False,False,False,NA

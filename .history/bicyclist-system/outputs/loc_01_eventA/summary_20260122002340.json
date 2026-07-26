@@ -1,0 +1,11 @@
+{
+  "loc": "loc_01",
+  "roi_json": "c:\\Users\\78222\\Desktop\\Bicylist-System\\bicyclist-system\\configs\\locations\\loc_01.json",
+  "img_dir": "C:\\Users\\78222\\Desktop\\28_locations\\0_MAIN_BIKE_DATASETS_clean\\Loc_01\\Bicyclist",
+  "n_images": 224,
+  "n_events": 67,
+  "detections_rows": 102,
+  "event_touch_rate": 0.24242424242424243,
+  "event_wrong_way_rate_applicable_only": null,
+  "event_wrong_way_applicable": 0
+}

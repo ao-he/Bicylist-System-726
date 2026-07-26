@@ -1,0 +1,7 @@
+event_id,n_images,img_first,img_last,has_target,touch_crosswalk,has_flow,wrong_way,direction,cos_to_flow
+0,2,IM_00340.JPG,IM_00341.JPG,True,False,True,NA,NA,NA
+1,1,IM_00380.JPG,IM_00380.JPG,False,False,True,NA,NA,NA
+2,2,IM_00504.JPG,IM_00505.JPG,False,False,True,NA,NA,NA
+3,2,IM_01974.JPG,IM_01975.JPG,True,False,True,NA,NA,NA
+4,1,IM_03016.JPG,IM_03016.JPG,False,False,True,NA,NA,NA
+5,2,IM_03180.JPG,IM_03181.JPG,False,False,True,NA,NA,NA

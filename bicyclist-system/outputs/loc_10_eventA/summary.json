@@ -1,0 +1,17 @@
+{
+  "location_id": "loc_10",
+  "unit": "super_event",
+  "N_super_events": 117,
+  "N_has_target": 98,
+  "N_wrong_way_applicable": 24,
+  "N_wrong_way": 14,
+  "share_wrong_way": 0.5833333333333334,
+  "params": {
+    "EVENT_GAP": 2,
+    "SUPER_GAP": 7,
+    "CONF_MIN": 0.1,
+    "BOTTOM_EDGE_NPTS": 5,
+    "VOTE_MIN_PTS": 2,
+    "MIN_MOVE_PX": 8.0
+  }
+}

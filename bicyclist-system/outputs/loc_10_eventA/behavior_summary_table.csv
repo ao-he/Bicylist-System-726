@@ -1,0 +1,7 @@
+behavior,count,denominator,ratio
+in_sidewalk_any,76,98,0.776
+in_bike_lane_any,32,98,0.327
+in_roadway_any,0,98,0.0
+wrong_way,14,24,0.583
+dominant_space=sidewalk,73,98,0.745
+dominant_space=bike_lane,25,98,0.255

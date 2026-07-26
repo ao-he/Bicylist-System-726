@@ -1,0 +1,33 @@
+{
+  "location_id": "loc_04",
+  "N_tracks": 74,
+  "crossing": {
+    "N_tracks": 74,
+    "N_crossing_any": 0,
+    "N_crosswalk": 0,
+    "N_non_crosswalk": 0
+  },
+  "space_usage": {
+    "N_tracks": 74,
+    "N_dom_bike_lane": 1,
+    "N_dom_sidewalk": 0,
+    "N_dom_roadway": 0,
+    "N_dom_unknown": 73
+  },
+  "wrong_way_any_space": {
+    "N_tracks": 74,
+    "N_applicable": 0,
+    "N_wrong_way": 0,
+    "share_wrong_way": null,
+    "scene_applicable": true
+  },
+  "params": {
+    "gate_overlap_fallback": 0.05,
+    "nms_iou_thr": 0.7,
+    "track_max_dist": 450.0,
+    "track_max_gap": 6,
+    "min_track_frames": 5,
+    "min_consecutive_frames": 3,
+    "min_move_px": 8.0
+  }
+}

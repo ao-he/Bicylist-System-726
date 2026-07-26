@@ -1,0 +1,23 @@
+{
+  "loc": "loc_02",
+  "roi_json": "c:\\Users\\78222\\Desktop\\Bicylist-System\\bicyclist-system\\configs\\locations\\loc_02.json",
+  "img_dir": "C:\\Users\\78222\\Desktop\\28_locations\\0_MAIN_BIKE_DATASETS_clean\\Loc_02\\Bicyclist",
+  "n_images": 10,
+  "detections_rows": 2,
+  "tracks_rows": 1,
+  "crossing_summary": {
+    "N_tracks": 1,
+    "N_crossing_any": 0,
+    "N_crosswalk": 0,
+    "N_non_crosswalk": 0
+  },
+  "wrong_way_summary": {
+    "N_tracks": 1,
+    "N_applicable": 0,
+    "N_wrong_way": 0,
+    "share_wrong_way": null,
+    "scene_applicable": true
+  },
+  "crosswalk_compliance": null,
+  "wrong_way_rate_applicable_only": null
+}

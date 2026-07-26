@@ -1,0 +1,7 @@
+n_imgs,has_target,n_det,in_sidewalk_any,in_bike_lane_any,in_roadway_any,dominant_space,wrong_way,direction,cos_to_flow,event_id
+2,True,1.0,False,True,False,bike_lane,,,,0
+1,False,,,,,,,,,1
+2,False,,,,,,,,,2
+2,True,1.0,False,True,False,bike_lane,,,,3
+1,False,,,,,,,,,4
+2,False,,,,,,,,,5

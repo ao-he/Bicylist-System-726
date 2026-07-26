@@ -1,0 +1,10 @@
+behavior,count,denominator,ratio
+crossing_any,0,74,0.0
+crossing_crosswalk,0,74,0.0
+crossing_non_crosswalk,0,74,0.0
+in_sidewalk_any,0,74,0.0
+in_bike_lane_any,1,74,0.014
+in_roadway_any,1,74,0.014
+wrong_way,0,0,
+dominant_space=unknown,73,74,0.986
+dominant_space=bike_lane,1,74,0.014
