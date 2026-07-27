@@ -66,8 +66,8 @@ class AssocParams:
                                   # between 1s captures
     rescue_max_frac: float = 0.8  # but never farther than this fraction of the
                                   # frame width (guards against exit/enter merges)
-    rescue_area_ratio: float = 4.0   # rescue only when bbox areas are within this ratio
-    rescue_min_app_sim: float = 0.30 # and appearance correlation reaches this (when known)
+    rescue_min_app_sim: float = 0.30 # appearance correlation required when fingerprints exist
+                                     # (no size gate: depth motion legitimately changes bbox area >10x)
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
@@ -142,12 +142,8 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
                 bb0, bb1 = active[rid0][1], bbs[0]
                 c = _bottom_center(bb1)
                 lc = _bottom_center(bb0)
-                a0 = max(1.0, (bb0[2]-bb0[0]) * (bb0[3]-bb0[1]))
-                a1 = max(1.0, (bb1[2]-bb1[0]) * (bb1[3]-bb1[1]))
-                ratio = max(a0, a1) / min(a0, a1)
                 sim = _app_sim(last_app.get(rid0), rows[0].app if hasattr(rows[0], "app") else None)
                 if (abs(c[0] - lc[0]) <= params.rescue_max_frac * frame_width
-                        and ratio <= params.rescue_area_ratio
                         and (sim is None or sim >= params.rescue_min_app_sim)):
                     assigned_det[0] = rid0
                     rescued_det_keys.add((int(img_num), 0))
