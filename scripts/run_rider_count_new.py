@@ -1215,3 +1215,139 @@ function exportCsv(){
     out = outdir / f"review_{loc_id}.html"
     out.write_text(html, encoding="utf-8")
     return out, len(rider_items), len(cand_items)
+
+
+# ---------------------------------------------------------------------------
+# Cross-location aggregation, manual comparison, review-CSV metrics
+# ---------------------------------------------------------------------------
+def aggregate_locations(out_root, exclude=()):
+    """One row per completed location under out_root."""
+    import json as _json
+    import pandas as pd
+    rows = []
+    for d in sorted(Path(out_root).glob("loc_*")):
+        if not d.is_dir() or d.name in exclude:
+            continue
+        sj = d / "scene_summary.json"
+        rc = d / "riders.csv"
+        if not (sj.exists() and rc.exists()):
+            continue
+        summ = _json.loads(sj.read_text())
+        r = pd.read_csv(rc)
+        dd = r["direction_displacement"]
+        along = int((dd == "along_flow").sum())
+        against = int((dd == "against_flow").sum())
+        dk = along + against
+        lo, hi = _wilson(against, dk) if dk else (0, 0)
+        rows.append({
+            "location": d.name,
+            "captures": summ.get("funnel", {}).get("captures"),
+            "riders": len(r),
+            "sidewalk": int(r["in_sidewalk_any"].sum()),
+            "bike_lane": int(r["in_bike_lane_any"].sum()),
+            "roadway": int(r["in_roadway_any"].sum()),
+            "dir_known": dk,
+            "along": along,
+            "against": against,
+            "cross": int((dd == "cross_flow").sum()),
+            "ww_rate": against / dk if dk else None,
+            "ww_lo": lo if dk else None,
+            "ww_hi": hi if dk else None,
+            "coverage": dk / len(r) if len(r) else 0,
+            "person_cands": summ.get("funnel", {}).get("person_candidates"),
+        })
+    return pd.DataFrame(rows)
+
+
+def all_locations_table(df):
+    import pandas as pd
+    d = df.copy()
+    d["WW rate"] = d.apply(lambda r: "" if not r.dir_known else
+                           f"{r.ww_rate:.0%} ({r.against}/{r.dir_known}, CI {r.ww_lo:.0%}-{r.ww_hi:.0%})", axis=1)
+    d["coverage"] = d["coverage"].map(lambda v: f"{v:.0%}")
+    d = d[["location", "captures", "riders", "sidewalk", "bike_lane", "roadway",
+           "dir_known", "coverage", "along", "against", "cross", "WW rate", "person_cands"]]
+    sty = (d.style.hide(axis="index")
+           .set_caption(f"All locations — pipeline results ({len(d)} locations)")
+           .map(lambda v: "background-color: #fdecea; font-weight:600;" if isinstance(v, str) and "CI" in v else "",
+                subset=["WW rate"])
+           .set_properties(subset=[c for c in d.columns if c not in ("location", "WW rate")],
+                           **{"text-align": "right", "font-variant-numeric": "tabular-nums"})
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight:600; color:{_INK}; padding:6px 0;"},
+               {"selector": "th", "props": f"text-align:left; color:{_INK2}; border-bottom:1.5px solid {_INK}; padding:4px 8px;"},
+               {"selector": "td", "props": f"padding:3px 8px; border-bottom:0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def manual_comparison_table(df, manual):
+    """manual: {location: (along, against)}. Deviation-ranked comparison."""
+    import pandas as pd
+    rows = []
+    for _, r in df.iterrows():
+        m = manual.get(r.location)
+        if not m:
+            continue
+        ma, mg = m
+        md = ma + mg
+        mww = mg / md if md else None
+        rows.append({
+            "location": r.location,
+            "riders (pipe)": r.riders, "riders (manual)": md,
+            "recall": r.riders / md if md else None,
+            "WW pipe": r.ww_rate, "WW manual": mww,
+            "ΔWW (pp)": (r.ww_rate - mww) * 100 if (r.ww_rate is not None and mww is not None) else None,
+            "dir coverage": r.coverage,
+        })
+    d = pd.DataFrame(rows)
+    if len(d):
+        d = d.sort_values("ΔWW (pp)", key=lambda c: c.abs(), ascending=False)
+    sty = (d.style.hide(axis="index")
+           .set_caption("Pipeline vs manual benchmark — sorted by |ΔWW| (largest deviation first)")
+           .format({"recall": "{:.0%}", "WW pipe": "{:.1%}", "WW manual": "{:.1%}",
+                    "ΔWW (pp)": "{:+.1f}", "dir coverage": "{:.0%}"}, na_rep="-")
+           .map(lambda v: "background-color:#fdecea; font-weight:700;" if isinstance(v, float) and abs(v) > 8 else "",
+                subset=["ΔWW (pp)"])
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight:600; color:{_INK}; padding:6px 0;"},
+               {"selector": "th", "props": f"text-align:left; color:{_INK2}; border-bottom:1.5px solid {_INK}; padding:4px 8px;"},
+               {"selector": "td", "props": f"padding:3px 8px; border-bottom:0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def analyze_review_csv(outdir, loc_id):
+    """Metrics from a labeled review_<loc>.csv exported by the review page."""
+    import pandas as pd
+    f = Path(outdir) / f"review_{loc_id}.csv"
+    if not f.exists():
+        return None
+    d = pd.read_csv(f)
+    d["label"] = d["label"].fillna("")
+    A = d[d.kind == "rider"]
+    B = d[d.kind == "candidate"]
+    a_lab = A[A.label != ""]
+    fp = int((a_lab.label == "不是骑行者").sum())
+    unclear = int((a_lab.label == "看不清").sum())
+    tp = len(a_lab) - fp - unclear
+    along = int((a_lab.label == "顺流").sum())
+    against = int((a_lab.label == "逆流").sum())
+    b_lab = B[B.label != ""]
+    missed_a = int((b_lab.label == "漏检骑行者:顺流").sum())
+    missed_g = int((b_lab.label == "漏检骑行者:逆流").sum())
+    dup = int((b_lab.label == "已计数(同一人)").sum())
+    res = {
+        "location": loc_id,
+        "riders_labeled": len(a_lab),
+        "precision": tp / max(len(a_lab) - unclear, 1),
+        "false_positives": fp,
+        "manual_along": along, "manual_against": against,
+        "manual_ww": against / max(along + against, 1),
+        "missed_riders": missed_a + missed_g,
+        "missed_along": missed_a, "missed_against": missed_g,
+        "duplicates_flagged": dup,
+        "corrected_riders": tp + missed_a + missed_g,
+        "corrected_ww": (against + missed_g) / max(along + against + missed_a + missed_g, 1),
+    }
+    return res
