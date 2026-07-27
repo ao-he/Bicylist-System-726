@@ -187,6 +187,36 @@ def summarize_riders(
 
 
 
+
+def dedup_contained_per_frame(det, frame_col="img_num", iomin_thr=0.60):
+    """Suppress same-frame boxes largely contained in a higher-score box.
+    Catches duplicate detections of one bicycle (partial box inside full box)
+    that plain IoU-NMS misses."""
+    if det is None or len(det) == 0:
+        return det
+    keep_idx = []
+    for _, g in det.groupby(frame_col, sort=False):
+        g = g.sort_values("score", ascending=False)
+        kept = []
+        for idx, r in g.iterrows():
+            a = (r.x1, r.y1, r.x2, r.y2)
+            aa = max(0.0, a[2]-a[0]) * max(0.0, a[3]-a[1])
+            dup = False
+            for kr in kept:
+                b = (kr.x1, kr.y1, kr.x2, kr.y2)
+                iw = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+                ih = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+                inter = iw * ih
+                bb = max(0.0, b[2]-b[0]) * max(0.0, b[3]-b[1])
+                if inter / max(min(aa, bb), 1e-6) >= iomin_thr:
+                    dup = True
+                    break
+            if not dup:
+                kept.append(r)
+                keep_idx.append(idx)
+    return det.loc[keep_idx]
+
+
 def imgnum(name: str) -> int:
     m = re.search(r"(\d+)", Path(str(name)).stem)
     return int(m.group(1)) if m else -1
@@ -273,6 +303,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         return summary
 
     det = nms_lite_per_frame(det, frame_col="img_num", score_col="score", iou_thr=getattr(args, "nms_iou", 0.70))
+    det = dedup_contained_per_frame(det, iomin_thr=getattr(args, "iomin_thr", 0.60))
 
     thr = FrameLabelThresholds(bottom_edge_npts=5, vote_min_pts=2)
     det["space_label"] = det.apply(
@@ -460,6 +491,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640, help="inference size; 1280 helps small/night riders")
     ap.add_argument("--classes", type=int, nargs="+", default=[1])
     ap.add_argument("--nms-iou", type=float, default=0.70)
+    ap.add_argument("--iomin-thr", type=float, default=0.60,
+                    help="suppress same-frame box contained in a stronger box beyond this ratio")
     ap.add_argument("--assoc-gap", type=int, default=3)
     ap.add_argument("--min-move-px", type=float, default=8.0)
     ap.add_argument("--cos-gate", type=float, default=0.5,
