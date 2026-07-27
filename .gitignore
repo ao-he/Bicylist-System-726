@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .history/
 .ipynb_checkpoints/
+/yolov8*.pt
