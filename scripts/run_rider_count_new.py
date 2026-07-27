@@ -315,6 +315,11 @@ def read_image(path: Path):
 def run_location(loc_id, img_dir, roi_json, outdir, args):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    for sub in ("crops", "crops_person", "viz", "direction_check"):
+        d = outdir / sub
+        if d.exists():
+            shutil.rmtree(d)
 
     cfg = load_roi_config(roi_json)
     roi = ExclusiveROIMaskEngine(cfg)
@@ -1096,6 +1101,22 @@ def generate_review_html(outdir, loc_id):
         rid = int(f.name.split("_")[0].replace("rider", ""))
         rider_first_crop.setdefault(rid, f"crops/{f.name}")
 
+    # counted-rider frames, for near-rider warnings on candidates
+    rider_frames = {}
+    dr_path = outdir / "detections_riders.csv"
+    if dr_path.exists():
+        _dr = pd.read_csv(dr_path)
+        if "img_num" in _dr.columns and "rider_id" in _dr.columns:
+            for _, _r in _dr.iterrows():
+                rider_frames.setdefault(int(_r.img_num), set()).add(int(_r.rider_id))
+
+    def near_rider(frame_num, win=3):
+        hits = set()
+        for f, rids in rider_frames.items():
+            if abs(f - frame_num) <= win:
+                hits |= rids
+        return sorted(hits)
+
     # collapse near-duplicate person crops (same frame, x within 80px)
     kept, last = [], {}
     for f in pcrops:
@@ -1108,14 +1129,23 @@ def generate_review_html(outdir, loc_id):
         last[frame] = x
         kept.append(f)
 
-    def item(img_rel, iid, kind):
+    def item(img_rel, iid, kind, warn=""):
+        w = ('<div class="warn">' + warn + '</div>') if warn else ""
         return ('<div class="item" data-id="' + iid + '" data-kind="' + kind + '">'
                 '<img src="' + img_rel + '" loading="lazy"><div class="meta">' + iid + '</div>'
-                '<div class="btns"></div></div>')
+                + w + '<div class="btns"></div></div>')
 
     rider_items = [item(rider_first_crop[int(r.rider_id)], "R" + str(int(r.rider_id)).zfill(4), "rider")
                    for _, r in riders.iterrows() if int(r.rider_id) in rider_first_crop]
-    cand_items = [item("crops_person/" + f.name, f.stem, "candidate") for f in kept]
+    cand_items = []
+    for f in kept:
+        m = _re.match(r"IM_(\d+)_p\d+", f.stem)
+        warn = ""
+        if m:
+            hits = near_rider(int(m.group(1)))
+            if hits:
+                warn = "&#9888; ±3帧内已有计数rider R" + ", R".join(str(h) for h in hits) + " — 可能是同一人"
+        cand_items.append(item("crops_person/" + f.name, f.stem, "candidate", warn))
 
     html_parts = ["""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Review LOCID</title>
 <style>
@@ -1125,6 +1155,7 @@ def generate_review_html(outdir, loc_id):
  .item{background:#fff;border:1px solid #e5e5e2;border-radius:10px;padding:10px}
  .item img{width:100%;max-height:260px;object-fit:contain;background:#eee;border-radius:6px}
  .meta{font-size:12px;color:#52514e;margin:6px 0 4px}
+ .warn{font-size:12px;color:#b3261e;background:#fdecea;border-radius:6px;padding:4px 6px;margin:4px 0}
  .btns button{margin:3px;padding:10px 12px;font-size:15px;border:1px solid #bbb;border-radius:8px;background:#f6f6f4;cursor:pointer}
  .btns button:hover{background:#e8f0fb}
  .btns button.sel{background:#2a78d6;color:#fff;border-color:#2a78d6}
@@ -1142,7 +1173,7 @@ def generate_review_html(outdir, loc_id):
 <script>
 var NL = String.fromCharCode(10);
 var OPTS = {rider:["顺流","逆流","横穿","不是骑行者","看不清"],
-            candidate:["漏检骑行者:顺流","漏检骑行者:逆流","不是骑行者","看不清"]};
+            candidate:["漏检骑行者:顺流","漏检骑行者:逆流","已计数(同一人)","不是骑行者","看不清"]};
 var KEY = "review_LOCID";
 var store = {};
 try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
