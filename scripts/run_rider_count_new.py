@@ -472,9 +472,12 @@ def render_direction_checks(det, riders, cfg, img_lookup, out_dir):
         # flow arrow on left panel
         if cfg.flow and cfg.flow.get("vector"):
             v = cfg.flow["vector"]
-            cv2.arrowedLine(comp, (int(v["x1"] * s0), int(v["y1"] * s0)),
-                            (int(v["x2"] * s0), int(v["y2"] * s0)),
-                            (0, 165, 255), 4, tipLength=0.2)
+            tip = (int(v["x2"] * s0), int(v["y2"] * s0))
+            cv2.arrowedLine(comp, (int(v["x1"] * s0), int(v["y1"] * s0)), tip,
+                            (0, 165, 255), 4, tipLength=0.06)
+            for th, col in ((6, (0, 0, 0)), (2, (0, 165, 255))):
+                cv2.putText(comp, "FLOW", (tip[0] - 40, tip[1] - 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, th, cv2.LINE_AA)
         # verdict banner
         ww = R.wrong_way_displacement
         verdict = ("WRONG-WAY" if ww is True else
@@ -526,8 +529,12 @@ def render_visualizations(det, riders, cfg, img_lookup, viz_dir, person_det=None
         img = cv2.addWeighted(overlay, 0.18, img, 0.82, 0)
         if cfg.flow and cfg.flow.get("vector"):
             v = cfg.flow["vector"]
-            cv2.arrowedLine(img, (int(v["x1"]), int(v["y1"])), (int(v["x2"]), int(v["y2"])),
-                            (0, 165, 255), 4, tipLength=0.25)
+            tip = (int(v["x2"]), int(v["y2"]))
+            cv2.arrowedLine(img, (int(v["x1"]), int(v["y1"])), tip,
+                            (0, 165, 255), 4, tipLength=0.06)
+            for th, col in ((6, (0, 0, 0)), (2, (0, 165, 255))):
+                cv2.putText(img, "FLOW", (tip[0] - 40, tip[1] - 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, th, cv2.LINE_AA)
         for _, r in g.iterrows():
             x1, y1, x2, y2 = int(r.x1), int(r.y1), int(r.x2), int(r.y2)
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 165, 255), 3)
