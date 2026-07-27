@@ -354,6 +354,13 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
                                       person_det=person_df)
         print(f"[{loc_id}] viz: {n_viz} annotated captures -> {outdir/'viz'}")
 
+    if getattr(args, "save_viz", True) and len(det):
+        n_dc = render_direction_checks(det, riders, cfg,
+                                       {p.name: p for p in img_paths},
+                                       outdir / "direction_check")
+        if n_dc:
+            print(f"[{loc_id}] direction checks: {n_dc} verification images -> {outdir/'direction_check'}")
+
     if getattr(args, "save_crops", False) and len(det):
         import cv2
         crop_dir = outdir / "crops"
@@ -419,6 +426,71 @@ VIZ_COLORS = {  # BGR
     "roadway": (60, 60, 230), "bike_lane": (80, 190, 60),
     "sidewalk": (220, 190, 40), "crosswalk": (230, 60, 230),
 }
+
+
+
+def render_direction_checks(det, riders, cfg, img_lookup, out_dir):
+    """One side-by-side (first | last capture) image per direction-judged rider,
+    with bboxes, the displacement arrow, the reference flow arrow and the
+    verdict banner — for manual verification of every wrong-way call."""
+    import cv2
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    judged = riders[riders["direction_displacement"].isin(
+        ["along_flow", "against_flow", "cross_flow"])]
+    for _, R in judged.iterrows():
+        g = det[det["rider_id"] == R.rider_id].sort_values("img_num")
+        first, last = g.iloc[0], g.iloc[-1]
+        panels = []
+        for r in (first, last):
+            src = img_lookup.get(r.img)
+            img, _ = (read_image(src) if src else (None, None))
+            if img is None:
+                break
+            img = img.copy()
+            cv2.rectangle(img, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)),
+                          (0, 165, 255), 4)
+            panels.append((img, r))
+        if len(panels) != 2:
+            continue
+        h = min(p_[0].shape[0] for p_ in panels)
+        scaled = []
+        for img, r in panels:
+            sc = h / img.shape[0]
+            scaled.append((cv2.resize(img, (int(img.shape[1] * sc), h)), r, sc))
+        comp = cv2.hconcat([s_[0] for s_ in scaled])
+        # displacement arrow in TRUE scene coordinates, drawn inside the left panel
+        (i0, r0, s0), (i1, r1, s1) = scaled
+        p0 = (int((r0.x1 + r0.x2) / 2 * s0), int(r0.y2 * s0))
+        p1 = (int((r1.x1 + r1.x2) / 2 * s0), int(r1.y2 * s0))
+        cv2.arrowedLine(comp, p0, p1, (255, 0, 255), 6, tipLength=0.08)
+        # ghost circle marking where the rider ends up (also on the right panel)
+        cv2.circle(comp, p1, 14, (255, 0, 255), 3)
+        pr = (int((r1.x1 + r1.x2) / 2 * s1) + i0.shape[1], int(r1.y2 * s1))
+        cv2.circle(comp, pr, 14, (255, 0, 255), 3)
+        # flow arrow on left panel
+        if cfg.flow and cfg.flow.get("vector"):
+            v = cfg.flow["vector"]
+            cv2.arrowedLine(comp, (int(v["x1"] * s0), int(v["y1"] * s0)),
+                            (int(v["x2"] * s0), int(v["y2"] * s0)),
+                            (0, 165, 255), 4, tipLength=0.2)
+        # verdict banner
+        ww = R.wrong_way_displacement
+        verdict = ("WRONG-WAY" if ww is True else
+                   ("crossing" if R.direction_displacement == "cross_flow" else "with flow"))
+        color = (60, 60, 230) if ww is True else ((230, 160, 40) if verdict == "crossing" else (60, 180, 60))
+        banner = comp.copy()
+        cv2.rectangle(banner, (0, 0), (comp.shape[1], 64), (250, 250, 250), -1)
+        comp = cv2.addWeighted(banner, 0.9, comp, 0.1, 0)
+        cosv = "" if pd.isna(R.cos_to_flow) else f"  cos={R.cos_to_flow:+.2f}"
+        txt = (f"R{int(R.rider_id)}  {verdict}{cosv}  disp={R.disp_px:.0f}px   "
+               f"{first.img} -> {last.img}   pink=movement  orange=reference flow")
+        cv2.putText(comp, txt, (16, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.1, color, 3, cv2.LINE_AA)
+        tag = "WW" if ww is True else ("CROSS" if verdict == "crossing" else "OK")
+        cv2.imwrite(str(out_dir / f"{tag}_R{int(R.rider_id):03d}.jpg"), comp)
+        n += 1
+    return n
 
 
 def render_visualizations(det, riders, cfg, img_lookup, viz_dir, person_det=None):
@@ -771,6 +843,39 @@ def person_review_table(person):
     return sty
 
 
+def direction_table(riders):
+    """Every direction-judged rider with its frames — the WW verification list."""
+    import pandas as pd
+    d = riders[riders["direction_displacement"].isin(
+        ["along_flow", "against_flow", "cross_flow"])].copy()
+    if not len(d):
+        return None
+    order = {"against_flow": 0, "cross_flow": 1, "along_flow": 2}
+    d = d.sort_values(by="direction_displacement", key=lambda c: c.map(order))
+    d["check image"] = d.apply(lambda r: ("WW" if r.wrong_way_displacement is True or r.wrong_way_displacement == True
+                                          else ("CROSS" if r.direction_displacement == "cross_flow" else "OK"))
+                                          + f"_R{int(r.rider_id):03d}.jpg", axis=1)
+    d = d[["rider_id", "img_first", "img_last", "disp_px", "cos_to_flow",
+           "direction_displacement", "wrong_way_displacement", "check image"]]
+    d.columns = ["rider", "first frame", "last frame", "disp (px)", "cos",
+                 "direction", "wrong-way", "check image"]
+    def dir_color(v):
+        return f"color: {DIRECTION_COLORS.get(v, _INK)}; font-weight: 700;"
+    sty = (d.style.hide(axis="index")
+           .set_caption(f"Direction verdicts — verify each against direction_check/ (n={len(d)})")
+           .format({"disp (px)": "{:.0f}", "cos": "{:+.2f}",
+                    "wrong-way": lambda v: "YES" if v is True or v == True else "no"}, na_rep="")
+           .map(dir_color, subset=["direction"])
+           .map(lambda v: "background-color: #fdecea; font-weight: 700;" if v == "YES" else "",
+                subset=["wrong-way"])
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
+               {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 10px;"},
+               {"selector": "td", "props": f"padding: 3px 10px; border-bottom: 0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
 def generate_report(outdir, roi_json, loc_id, show=True):
     """Build all report tables & figures for one location run.
     Figures are also saved to outdir/report/ as 200-dpi PNGs for the paper."""
@@ -790,6 +895,9 @@ def generate_report(outdir, roi_json, loc_id, show=True):
     out["funnel"] = qc_funnel_table(summary)
     if len(riders):
         out["riders_table"] = riders_table(riders)
+        dt = direction_table(riders)
+        if dt is not None:
+            out["direction_table"] = dt
         out["fig_facility"] = fig_facility(riders, loc_id, save_to=rep_dir / "facility_involvement.png")
     if len(person):
         prt = person_review_table(person)
