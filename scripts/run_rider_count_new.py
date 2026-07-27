@@ -1503,7 +1503,8 @@ def facility_comparison_table(df, manual_df):
     used — the any-involvement columns are intentionally NOT compared here."""
     import pandas as pd
     rows = []
-    for _, m in manual_df.dropna(subset=["fwd_total"]).iterrows():
+    need = ["fwd_bl", "fwd_sw", "fwd_rd", "ww_bl", "ww_sw", "ww_rd"]
+    for _, m in manual_df.dropna(subset=need).iterrows():
         loc = f"loc_{m['loc']}"
         hit = df[df.location == loc]
         if not len(hit):
