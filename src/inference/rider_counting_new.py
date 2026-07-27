@@ -1,4 +1,4 @@
-# src/inference/rider_counting.py
+# src/inference/rider_counting_new.py
 """
 Per-rider counting for burst-capture data (method B: detect every frame,
 then de-duplicate).

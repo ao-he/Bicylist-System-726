@@ -6,14 +6,14 @@ configs, and report per-scene counts.
 
 Run locally next to the raw data, one location at a time:
 
-    python scripts/run_rider_count.py \
+    python scripts/run_rider_count_new.py \
         --loc-id loc_25 \
         --img-dir "C:/Users/78222/Desktop/28_locations/0_MAIN_BIKE_DATASETS_clean/Loc_25/Bicyclist" \
-        --outdir outputs_rider/loc_25
+        --outdir outputs_new/loc_25
 
 or over every location that has a ROI config:
 
-    python scripts/run_rider_count.py --batch \
+    python scripts/run_rider_count_new.py --batch \
         --data-root "C:/Users/78222/Desktop/28_locations/0_MAIN_BIKE_DATASETS_clean"
 
 Outputs per location (in --outdir):
@@ -39,10 +39,10 @@ sys.path.insert(0, str(REPO_ROOT))
 import numpy as np
 import pandas as pd
 
-from src.scene.roi import load_roi_config, ROIMaskEngine
+from src.scene.roi_new import load_roi_config, ExclusiveROIMaskEngine
 from src.inference.common import frame_space_label, FrameLabelThresholds
 from src.inference.nms_lite import nms_lite_per_frame
-from src.inference.rider_counting import AssocParams, associate_riders, summarize_riders
+from src.inference.rider_counting_new import AssocParams, associate_riders, summarize_riders
 
 KEEP_LABELS = {"sidewalk", "bike_lane", "roadway", "crosswalk"}
 
@@ -81,7 +81,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     outdir.mkdir(parents=True, exist_ok=True)
 
     cfg = load_roi_config(roi_json)
-    roi = ROIMaskEngine(cfg, exclusive=True)
+    roi = ExclusiveROIMaskEngine(cfg)
     flow = roi.flow_vector()
 
     img_paths = collect_images(Path(img_dir), args.max_images)
@@ -215,11 +215,12 @@ def main():
     ap.add_argument("--min-move-px", type=float, default=8.0)
     ap.add_argument("--save-crops", action="store_true")
     ap.add_argument("--max-images", type=int)
+    ap.add_argument("--configs-dir", help="ROI config folder (default configs/locations)")
     args = ap.parse_args()
     args.classes = set(args.classes)
 
-    cfg_dir = REPO_ROOT / "configs" / "locations"
-    out_root = REPO_ROOT / "outputs_rider"
+    cfg_dir = Path(args.configs_dir) if args.configs_dir else REPO_ROOT / "configs" / "locations"
+    out_root = REPO_ROOT / "outputs_new"
 
     if args.batch:
         if not args.data_root:
@@ -227,6 +228,8 @@ def main():
         root = Path(args.data_root)
         summaries = []
         for cfg in sorted(cfg_dir.glob("loc_*.json")):
+            if "old" in cfg.stem.lower():
+                continue
             loc = cfg.stem
             img_dir = find_img_dir(root, loc)
             if img_dir is None:
