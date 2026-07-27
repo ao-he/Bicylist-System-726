@@ -19,11 +19,18 @@ or over every location that has a ROI config:
 Outputs per location (in --outdir):
     detections_raw.csv   every detection (explicit conf threshold)
     detections_riders.csv detections + space_label + rider_id
-    riders.csv           one row per rider (counting unit)
+    riders.csv           one row per rider (counting unit), with dominant_space
+    stationary_objects.csv detections removed as parked bikes (audit trail:
+                         verify none of them is a real rider)
     scene_summary.json   counts + parameters
     integrity_report.csv unreadable / truncated captures
     crops/               (--save-crops) one crop per appearance, for
                          orientation labeling
+
+Association uses image-number gaps AND EXIF capture times: motion-triggered
+cameras make consecutive image numbers minutes apart, so a time gap above
+--max-time-gap-s always breaks the chain (prevents merging two different
+riders into one).
 """
 from __future__ import annotations
 
@@ -74,6 +81,10 @@ class AssocParams:
                                           # never contribute a displacement direction
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
+    max_time_gap_s: float = 30.0  # motion-triggered cameras: consecutive image numbers can
+                                  # be minutes apart, so a frame-gap check alone merges two
+                                  # different people. EXIF capture times farther apart than
+                                  # this always break the association (0 disables).
 
 
 def _bottom_center(bb: BBox) -> Tuple[float, float]:
@@ -104,17 +115,24 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
     last_app: Dict[int, object] = {}
     rescued_det_keys = set()
     rescue_flags: List[bool] = []
-    # rid -> (last_img_num, last_bbox)
-    active: Dict[int, Tuple[int, BBox]] = {}
+    # rid -> (last_img_num, last_bbox, last_ts)
+    active: Dict[int, Tuple[int, BBox, Optional[float]]] = {}
     rider_ids: List[int] = []
+    max_dt = float(getattr(params, "max_time_gap_s", 30.0) or 0)
 
     for img_num, frame in g.groupby("img_num", sort=True):
-        # expire riders that are too far in the past
-        for rid in [r for r, (n, _) in active.items()
-                    if img_num - n > params.max_frame_gap]:
+        rows = list(frame.itertuples())
+        ts_now = getattr(rows[0], "ts", None)
+        ts_now = float(ts_now) if ts_now is not None and pd.notna(ts_now) else None
+
+        # expire riders that are too far in the past (image number, or real
+        # capture time when EXIF is available)
+        for rid in [r for r, (n, _, t) in active.items()
+                    if img_num - n > params.max_frame_gap
+                    or (max_dt > 0 and t is not None and ts_now is not None
+                        and ts_now - t > max_dt)]:
             del active[rid]
 
-        rows = list(frame.itertuples())
         bbs = [(float(r.x1), float(r.y1), float(r.x2), float(r.y2)) for r in rows]
 
         # greedy one-to-one matching: closest pairs first
@@ -122,7 +140,7 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
         for i, bb in enumerate(bbs):
             c = _bottom_center(bb)
             gate = max(params.min_gate_px, params.max_dist_factor * _diag(bb))
-            for rid, (_, last_bb) in active.items():
+            for rid, (_, last_bb, _t) in active.items():
                 lc = _bottom_center(last_bb)
                 d = ((c[0] - lc[0]) ** 2 + (c[1] - lc[1]) ** 2) ** 0.5
                 if d <= gate:
@@ -139,7 +157,7 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
         # burst rescue: single detection, single recent rider -> same person,
         # even when the fast-rider displacement exceeds the spatial gate
         if params.burst_rescue and len(bbs) == 1 and not assigned_det:
-            recent = [rid for rid, (n, _) in active.items()
+            recent = [rid for rid, (n, _, _t) in active.items()
                       if img_num - n <= params.rescue_gap and rid not in used_rids]
             if len(recent) == 1:
                 rid0 = recent[0]
@@ -159,7 +177,7 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
                 next_rid += 1
             rider_ids.append(rid)
             rescue_flags.append((int(img_num), i) in rescued_det_keys)
-            active[rid] = (int(img_num), bb)
+            active[rid] = (int(img_num), bb, ts_now)
             if hasattr(rows[i], "app"):
                 last_app[rid] = rows[i].app
 
@@ -178,10 +196,33 @@ def summarize_riders(
     space_label. Facility flags use the same any-involvement semantics as
     the event pipeline (crosswalk counts as roadway).
     """
+    cols = ["rider_id", "n_obs", "assoc_rescue", "img_first", "img_last",
+            "img_num_first", "img_num_last", "in_sidewalk_any", "in_bike_lane_any",
+            "in_roadway_any", "dominant_space", "dwell_s", "disp_px",
+            "direction_displacement", "cos_to_flow", "wrong_way_displacement",
+            "orientation"]
+    if det_df is None or len(det_df) == 0:
+        return pd.DataFrame(columns=cols)
+
+    prio = ("crosswalk", "bike_lane", "sidewalk", "roadway")
     rows = []
     for rid, g in det_df.groupby("rider_id", sort=True):
         g = g.sort_values("img_num")
         labels = g["space_label"].tolist()
+
+        # dominant facility: majority vote over the rider's observations,
+        # ties broken by priority — same definition the manual count uses
+        # ("where did this person mainly ride"), unlike the any-involvement
+        # flags below which light up on a single touching frame
+        cnt = {k: labels.count(k) for k in prio}
+        best = max(prio, key=lambda k: (cnt[k], -prio.index(k)))
+        dominant = best if cnt[best] > 0 else "unknown"
+        if dominant == "crosswalk":
+            dominant = "roadway"   # crossing is roadway semantics
+
+        ts_vals = ([float(v) for v in g["ts"].tolist() if pd.notna(v)]
+                   if "ts" in g.columns else [])
+        dwell = (max(ts_vals) - min(ts_vals)) if len(ts_vals) >= 2 else None
 
         first, last = g.iloc[0], g.iloc[-1]
         bc0 = _bottom_center((first.x1, first.y1, first.x2, first.y2))
@@ -216,6 +257,8 @@ def summarize_riders(
             "in_sidewalk_any": "sidewalk" in labels,
             "in_bike_lane_any": "bike_lane" in labels,
             "in_roadway_any": ("roadway" in labels) or ("crosswalk" in labels),
+            "dominant_space": dominant,
+            "dwell_s": None if dwell is None else round(dwell, 1),
             "disp_px": round(disp, 1),
             "direction_displacement": direction,
             "cos_to_flow": None if cos is None else round(float(cos), 3),
@@ -296,6 +339,75 @@ def _app_sim(a, b):
         return None
 
 
+def read_exif_ts(path):
+    """EXIF capture time as epoch seconds (DateTimeOriginal, falling back to
+    DateTime). None when the file has no usable timestamp — everything that
+    consumes ts degrades gracefully to image-number logic in that case."""
+    try:
+        from PIL import Image
+        from datetime import datetime
+        with Image.open(path) as im:
+            ex = im.getexif()
+            v = ex.get(306)                       # DateTime
+            try:
+                v = ex.get_ifd(0x8769).get(36867) or v  # DateTimeOriginal
+            except Exception:
+                pass
+        if not v:
+            return None
+        return datetime.strptime(str(v).strip()[:19], "%Y:%m:%d %H:%M:%S").timestamp()
+    except Exception:
+        return None
+
+
+def flag_stationary_detections(det, radius_px=30.0, min_hits=6,
+                               min_span_frames=50, min_span_s=300.0):
+    """Flag detections of parked bicycles.
+
+    A parked bike fires a detection at the same spot every time a passer-by
+    triggers the camera; the frame-gap association then splits it into many
+    fake "riders" (loc_15 counted 122% of the manual benchmark this way).
+    Greedy centroid clustering of bbox bottom-centers: a cluster hit in
+    >= min_hits distinct captures whose span exceeds min_span_s EXIF seconds
+    (or min_span_frames image numbers when no timestamps exist) cannot be one
+    passing rider — a cyclist waiting at a light clears in well under 5
+    minutes. Returns a boolean Series aligned with det.index.
+    """
+    flags = pd.Series(False, index=det.index)
+    if det is None or len(det) == 0:
+        return flags
+    have_ts = "ts" in det.columns
+    clusters = []  # [cx, cy, n, frame_set, ts_list, idx_list]
+    for idx, r in det.sort_values("img_num").iterrows():
+        cx, cy = (float(r.x1) + float(r.x2)) / 2.0, float(r.y2)
+        best, bd = None, None
+        for c in clusters:
+            d = ((cx - c[0]) ** 2 + (cy - c[1]) ** 2) ** 0.5
+            if d <= radius_px and (bd is None or d < bd):
+                best, bd = c, d
+        if best is None:
+            best = [cx, cy, 1, {int(r.img_num)}, [], [idx]]
+            clusters.append(best)
+        else:
+            best[0] = (best[0] * best[2] + cx) / (best[2] + 1)
+            best[1] = (best[1] * best[2] + cy) / (best[2] + 1)
+            best[2] += 1
+            best[3].add(int(r.img_num))
+            best[5].append(idx)
+        if have_ts and pd.notna(r.ts):
+            best[4].append(float(r.ts))
+    for c in clusters:
+        if len(c[3]) < min_hits:
+            continue
+        if len(c[4]) >= 2:
+            span_ok = (max(c[4]) - min(c[4])) >= min_span_s
+        else:
+            span_ok = (max(c[3]) - min(c[3])) >= min_span_frames
+        if span_ok:
+            flags.loc[c[5]] = True
+    return flags
+
+
 def read_image(path: Path):
     """cv2 first; fall back to PIL with truncated-JPEG tolerance."""
     import cv2
@@ -335,6 +447,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     model = YOLO(args.model)
 
     det_rows, person_rows, integrity = [], [], []
+    n_with_ts = 0
     for i, p in enumerate(img_paths):
         img, status = read_image(p)
         if img is None:
@@ -342,6 +455,9 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             continue
         if status != "ok":
             integrity.append({"img": p.name, "status": status})
+        ts = read_exif_ts(p)
+        if ts is not None:
+            n_with_ts += 1
         r = model(img, conf=args.conf, imgsz=getattr(args, "imgsz", 640), verbose=False)[0]
         if r.boxes is None:
             continue
@@ -351,7 +467,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             r.boxes.cls.cpu().numpy().astype(int),
         ):
             row = {
-                "img": p.name, "img_num": imgnum(p.name), "frame_global": i,
+                "img": p.name, "img_num": imgnum(p.name), "frame_global": i, "ts": ts,
                 "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
                 "score": float(s), "cls": int(c),
                 "app": _app_hist(img, x1, y1, x2, y2),
@@ -386,9 +502,25 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     det = det[det["space_label"].isin(KEEP_LABELS)].copy()
     n_in_roi = len(det)
 
+    n_stationary = 0
+    if getattr(args, "stationary_filter", True) and len(det):
+        stat_mask = flag_stationary_detections(
+            det,
+            radius_px=getattr(args, "stationary_radius", 30.0),
+            min_hits=getattr(args, "stationary_hits", 6),
+            min_span_frames=getattr(args, "stationary_span_frames", 50),
+            min_span_s=getattr(args, "stationary_span_s", 300.0))
+        n_stationary = int(stat_mask.sum())
+        if n_stationary:
+            det[stat_mask].to_csv(outdir / "stationary_objects.csv", index=False)
+            print(f"[{loc_id}] stationary filter: {n_stationary} detections at parked-bike "
+                  f"spots removed -> stationary_objects.csv (verify the crops there)")
+        det = det[~stat_mask].copy()
+
     assoc = AssocParams(max_frame_gap=getattr(args, "assoc_gap", 3),
                         min_move_px=getattr(args, "min_move_px", 25.0),
-                        cos_gate=getattr(args, "cos_gate", 0.5))
+                        cos_gate=getattr(args, "cos_gate", 0.5),
+                        max_time_gap_s=getattr(args, "max_time_gap_s", 30.0))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
@@ -467,6 +599,9 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "riders_in_sidewalk": int(riders["in_sidewalk_any"].sum()),
         "riders_in_bike_lane": int(riders["in_bike_lane_any"].sum()),
         "riders_in_roadway": int(riders["in_roadway_any"].sum()),
+        "riders_dom_sidewalk": int((riders["dominant_space"] == "sidewalk").sum()),
+        "riders_dom_bike_lane": int((riders["dominant_space"] == "bike_lane").sum()),
+        "riders_dom_roadway": int((riders["dominant_space"] == "roadway").sum()),
         "direction_known_displacement": n_dir,
         "riders_crossing_flow": n_cross,
         "wrong_way_displacement": n_ww,
@@ -479,19 +614,27 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "after_nms": int(n_after_nms),
             "after_containment_dedup": int(n_after_dedup),
             "in_roi": int(n_in_roi),
+            "stationary_object_dets": int(n_stationary),
             "riders": int(riders.shape[0]),
             "person_candidates": int(len(person_rows)),
+            "captures_with_exif_ts": int(n_with_ts),
         },
         "params": {
             "model": args.model, "conf": args.conf, "classes": sorted(args.classes),
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
             "min_move_px": getattr(args, "min_move_px", 25.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
+            "max_time_gap_s": getattr(args, "max_time_gap_s", 30.0),
+            "stationary_filter": bool(getattr(args, "stationary_filter", True)),
+            "stationary_radius_px": getattr(args, "stationary_radius", 30.0),
+            "stationary_min_hits": getattr(args, "stationary_hits", 6),
+            "stationary_min_span_s": getattr(args, "stationary_span_s", 300.0),
         },
     }
     (outdir / "scene_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"[{loc_id}] riders={summary['n_riders']} "
-          f"(sidewalk {summary['riders_in_sidewalk']}, bike {summary['riders_in_bike_lane']}, "
-          f"road {summary['riders_in_roadway']}), dir-known {n_dir}, cross {n_cross}, ww {n_ww}")
+          f"(dominant: sidewalk {summary['riders_dom_sidewalk']}, bike {summary['riders_dom_bike_lane']}, "
+          f"road {summary['riders_dom_roadway']}), dir-known {n_dir}, cross {n_cross}, ww {n_ww}, "
+          f"stationary-removed {n_stationary}, exif-ts {n_with_ts}/{len(img_paths)}")
     return summary
 
 
@@ -665,6 +808,19 @@ def main():
     ap.add_argument("--min-move-px", type=float, default=25.0)
     ap.add_argument("--cos-gate", type=float, default=0.5,
                     help="|cos| below this counts as crossing (WW undefined)")
+    ap.add_argument("--max-time-gap-s", type=float, default=30.0,
+                    help="EXIF capture-time gap that always breaks association "
+                         "(motion-triggered frames can be minutes apart; 0 disables)")
+    ap.add_argument("--no-stationary-filter", dest="stationary_filter", action="store_false",
+                    help="keep parked-bike clusters (on by default)")
+    ap.add_argument("--stationary-radius", type=float, default=30.0,
+                    help="cluster radius (px) for the parked-bike filter")
+    ap.add_argument("--stationary-hits", type=int, default=6,
+                    help="min distinct captures at one spot to call it stationary")
+    ap.add_argument("--stationary-span-frames", type=int, default=50,
+                    help="min image-number span for a stationary cluster (no-EXIF fallback)")
+    ap.add_argument("--stationary-span-s", type=float, default=300.0,
+                    help="min EXIF time span (s) for a stationary cluster")
     ap.add_argument("--save-crops", action="store_true")
     ap.add_argument("--no-viz", dest="save_viz", action="store_false",
                     help="skip annotated visualization export (on by default)")
@@ -777,6 +933,14 @@ def scene_stats_table(riders, loc_id="", manual=None, n_person_candidates=None):
         ("Bike lane involvement",       f"{bl}  ({pct(bl, n)})",       ""),
         ("Roadway involvement",         f"{rd}  ({pct(rd, n)})",       ""),
     ]
+    if "dominant_space" in riders.columns:
+        dom = riders["dominant_space"]
+        dsw, dbl, drd = (int((dom == k).sum()) for k in ("sidewalk", "bike_lane", "roadway"))
+        rows += [
+            ("Dominant facility: sidewalk",  f"{dsw}  ({pct(dsw, n)})", ""),
+            ("Dominant facility: bike lane", f"{dbl}  ({pct(dbl, n)})", ""),
+            ("Dominant facility: roadway",   f"{drd}  ({pct(drd, n)})", ""),
+        ]
     if n_person_candidates is not None:
         rows.append(("Person-only candidates (possible missed riders)",
                      f"{n_person_candidates}", ""))
@@ -819,9 +983,14 @@ def qc_funnel_table(summary):
         ("After NMS",                   f["after_nms"],               f"same-frame IoU >= {summary['params']['nms_iou']} removed"),
         ("After containment dedup",     f["after_containment_dedup"], "nested duplicate boxes removed"),
         ("Inside study ROI",            f["in_roi"],                  "bottom-edge vote in annotated facilities"),
-        ("Riders (counting unit)",      f["riders"],                  "nearby-capture association"),
+        ("  stationary objects removed", -f.get("stationary_object_dets", 0),
+         "parked bikes: same spot repeatedly over a long span (stationary_objects.csv)"),
+        ("Riders (counting unit)",      f["riders"],                  "nearby-capture association (frame gap + EXIF time gate)"),
         ("Person-only candidates",      f["person_candidates"],       "possible missed riders, flagged for review"),
     ]
+    if f.get("captures_with_exif_ts") is not None:
+        rows.insert(1, ("  with EXIF timestamp", f["captures_with_exif_ts"],
+                        "capture time drives association & stationary spans"))
     df = pd.DataFrame(rows, columns=["Stage", "Count", "Rule"])
     sty = (df.style.hide(axis="index")
            .set_caption(f"Detection funnel — {summary['location_id']}")
@@ -845,11 +1014,13 @@ def riders_table(riders, max_rows=60):
         d = d.sort_values(by="direction_displacement", key=lambda c: c.map(order)).head(max_rows)
     for c in ("in_sidewalk_any", "in_bike_lane_any", "in_roadway_any"):
         d[c] = d[c].map({True: "\u2713", False: ""})
+    if "dominant_space" not in d.columns:
+        d["dominant_space"] = ""
     d = d[["rider_id", "n_obs", "img_first", "img_last",
-           "in_sidewalk_any", "in_bike_lane_any", "in_roadway_any",
+           "in_sidewalk_any", "in_bike_lane_any", "in_roadway_any", "dominant_space",
            "disp_px", "direction_displacement", "cos_to_flow", "wrong_way_displacement"]]
     d.columns = ["rider", "obs", "first capture", "last capture",
-                 "sidewalk", "bike lane", "roadway",
+                 "sidewalk", "bike lane", "roadway", "dominant",
                  "disp (px)", "direction", "cos", "wrong-way"]
     def dir_color(v):
         return f"color: {DIRECTION_COLORS.get(v, _INK)}; font-weight: 600;"
@@ -860,6 +1031,8 @@ def riders_table(riders, max_rows=60):
            .format({"disp (px)": "{:.0f}", "cos": lambda v: "" if pd.isna(v) else f"{v:+.2f}",
                     "wrong-way": lambda v: "" if pd.isna(v) else ("YES" if v else "no")}, na_rep="")
            .map(dir_color, subset=["direction"])
+           .map(lambda v: f"color: {FACILITY_COLORS.get(v, _INK2)}; font-weight: 600;",
+                subset=["dominant"])
            .set_properties(subset=["sidewalk"], **{"color": FACILITY_COLORS["sidewalk"], "text-align": "center"})
            .set_properties(subset=["bike lane"], **{"color": FACILITY_COLORS["bike_lane"], "text-align": "center"})
            .set_properties(subset=["roadway"], **{"color": FACILITY_COLORS["roadway"], "text-align": "center"})
@@ -1246,6 +1419,9 @@ def aggregate_locations(out_root, exclude=()):
             "sidewalk": int(r["in_sidewalk_any"].sum()),
             "bike_lane": int(r["in_bike_lane_any"].sum()),
             "roadway": int(r["in_roadway_any"].sum()),
+            "dom_sidewalk": int((r["dominant_space"] == "sidewalk").sum()) if "dominant_space" in r.columns else None,
+            "dom_bike_lane": int((r["dominant_space"] == "bike_lane").sum()) if "dominant_space" in r.columns else None,
+            "dom_roadway": int((r["dominant_space"] == "roadway").sum()) if "dominant_space" in r.columns else None,
             "dir_known": dk,
             "along": along,
             "against": against,
@@ -1265,8 +1441,10 @@ def all_locations_table(df):
     d["WW rate"] = d.apply(lambda r: "" if not r.dir_known else
                            f"{r.ww_rate:.0%} ({r.against}/{r.dir_known}, CI {r.ww_lo:.0%}-{r.ww_hi:.0%})", axis=1)
     d["coverage"] = d["coverage"].map(lambda v: f"{v:.0%}")
-    d = d[["location", "captures", "riders", "sidewalk", "bike_lane", "roadway",
-           "dir_known", "coverage", "along", "against", "cross", "WW rate", "person_cands"]]
+    cols = ["location", "captures", "riders", "sidewalk", "bike_lane", "roadway",
+            "dom_sidewalk", "dom_bike_lane", "dom_roadway",
+            "dir_known", "coverage", "along", "against", "cross", "WW rate", "person_cands"]
+    d = d[[c for c in cols if c in d.columns]]
     sty = (d.style.hide(axis="index")
            .set_caption(f"All locations — pipeline results ({len(d)} locations)")
            .map(lambda v: "background-color: #fdecea; font-weight:600;" if isinstance(v, str) and "CI" in v else "",
@@ -1309,6 +1487,51 @@ def manual_comparison_table(df, manual):
                     "ΔWW (pp)": "{:+.1f}", "dir coverage": "{:.0%}"}, na_rep="-")
            .map(lambda v: "background-color:#fdecea; font-weight:700;" if isinstance(v, float) and abs(v) > 8 else "",
                 subset=["ΔWW (pp)"])
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight:600; color:{_INK}; padding:6px 0;"},
+               {"selector": "th", "props": f"text-align:left; color:{_INK2}; border-bottom:1.5px solid {_INK}; padding:4px 8px;"},
+               {"selector": "td", "props": f"padding:3px 8px; border-bottom:0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def facility_comparison_table(df, manual_df):
+    """Dominant-facility counts vs the manual benchmark, like-for-like.
+    manual_df = data/manual_counts_new.csv (fwd_bl/ww_bl etc.); manual facility
+    total = fwd + ww for that facility. Pipeline side uses dominant_space (the
+    facility the rider mainly rode on), the same definition the human count
+    used — the any-involvement columns are intentionally NOT compared here."""
+    import pandas as pd
+    rows = []
+    for _, m in manual_df.dropna(subset=["fwd_total"]).iterrows():
+        loc = f"loc_{m['loc']}"
+        hit = df[df.location == loc]
+        if not len(hit):
+            continue
+        r = hit.iloc[0]
+        rows.append({
+            "location": loc,
+            "BL pipe": r.get("dom_bike_lane"),
+            "BL manual": int(m.fwd_bl) + int(m.ww_bl),
+            "SW pipe": r.get("dom_sidewalk"),
+            "SW manual": int(m.fwd_sw) + int(m.ww_sw),
+            "RD pipe": r.get("dom_roadway"),
+            "RD manual": int(m.fwd_rd) + int(m.ww_rd),
+        })
+    d = pd.DataFrame(rows)
+    if not len(d):
+        return None
+    tot = {"location": "TOTAL"}
+    for c in d.columns[1:]:
+        tot[c] = int(pd.to_numeric(d[c], errors="coerce").fillna(0).sum())
+    d = pd.concat([d, pd.DataFrame([tot])], ignore_index=True)
+    sty = (d.style.hide(axis="index")
+           .set_caption("Facility split, pipeline dominant_space vs manual (same definition: "
+                        "facility the rider mainly used)")
+           .format(na_rep="-", precision=0)
+           .map(lambda v: "font-weight:700;", subset=pd.IndexSlice[d.index[d.location == "TOTAL"], :])
+           .set_properties(subset=[c for c in d.columns if c != "location"],
+                           **{"text-align": "right", "font-variant-numeric": "tabular-nums"})
            .set_table_styles([
                {"selector": "caption", "props": f"caption-side: top; font-weight:600; color:{_INK}; padding:6px 0;"},
                {"selector": "th", "props": f"text-align:left; color:{_INK2}; border-bottom:1.5px solid {_INK}; padding:4px 8px;"},

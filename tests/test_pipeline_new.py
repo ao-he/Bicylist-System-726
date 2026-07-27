@@ -85,11 +85,73 @@ def test_roi_priority():
           frame_space_label((200, 450, 300, 550), roi, thr) == "bike_lane")
 
 
+def test_time_gap_gate():
+    # consecutive image numbers, but EXIF says 10 minutes apart:
+    # two different people, must NOT merge into one rider
+    det = pd.DataFrame([
+        dict(img="a", img_num=1, x1=200, y1=300, x2=310, y2=460, score=.9,
+             space_label="bike_lane", ts=1000.0),
+        dict(img="b", img_num=2, x1=230, y1=300, x2=340, y2=460, score=.9,
+             space_label="bike_lane", ts=1600.0),
+    ])
+    out = rrc.associate_riders(det, rrc.AssocParams(max_time_gap_s=30.0))
+    check("EXIF gap breaks association", out.rider_id.nunique() == 2)
+
+    det2 = det.copy(); det2["ts"] = [1000.0, 1006.0]  # 6 s apart: same rider
+    out2 = rrc.associate_riders(det2, rrc.AssocParams(max_time_gap_s=30.0))
+    check("close EXIF times keep association", out2.rider_id.nunique() == 1)
+
+    out3 = rrc.associate_riders(det, rrc.AssocParams(max_time_gap_s=0))
+    check("time gate disabled with 0", out3.rider_id.nunique() == 1)
+
+
+def test_stationary_filter():
+    # parked bike: same spot in 8 captures spread over 40 minutes
+    rows = [dict(img=f"p{i}", img_num=n, x1=500, y1=300, x2=560, y2=400,
+                 score=.9, ts=1000.0 + i * 300.0)
+            for i, n in enumerate([1, 30, 61, 95, 130, 168, 200, 240])]
+    # real rider passing nearby (3 captures, 10 s, never on the parked spot)
+    rows += [dict(img=f"r{i}", img_num=300 + i, x1=100 + 250 * i, y1=310,
+                  x2=160 + 250 * i, y2=410, score=.9, ts=9000.0 + 5.0 * i)
+             for i in range(3)]
+    det = pd.DataFrame(rows)
+    flags = rrc.flag_stationary_detections(det)
+    check("parked bike flagged", flags[:8].all())
+    check("moving rider spared", not flags[8:].any())
+
+    # waiting cyclist: same spot but only 60 s span -> NOT stationary
+    det2 = pd.DataFrame([dict(img=f"w{i}", img_num=1 + i, x1=500, y1=300,
+                              x2=560, y2=400, score=.9, ts=1000.0 + 10.0 * i)
+                         for i in range(6)])
+    check("waiting cyclist (60s) spared", not rrc.flag_stationary_detections(det2).any())
+
+
+def test_dominant_space():
+    det = pd.DataFrame([  # 2 sidewalk frames, 1 roadway frame -> sidewalk dominant
+        dict(img="a", img_num=1, x1=100, y1=500, x2=160, y2=600, score=.9, space_label="sidewalk", assoc_rescue=False),
+        dict(img="b", img_num=2, x1=300, y1=500, x2=360, y2=600, score=.9, space_label="sidewalk", assoc_rescue=False),
+        dict(img="c", img_num=3, x1=500, y1=500, x2=560, y2=600, score=.9, space_label="roadway", assoc_rescue=False),
+    ]).assign(rider_id=0)
+    r = rrc.summarize_riders(det, flow=None, params=rrc.AssocParams())
+    check("dominant = majority facility", r.dominant_space.iloc[0] == "sidewalk")
+
+    det2 = det.copy(); det2["space_label"] = ["bike_lane", "sidewalk", "roadway"]
+    r2 = rrc.summarize_riders(det2, flow=None, params=rrc.AssocParams())
+    check("tie broken by priority (bike lane)", r2.dominant_space.iloc[0] == "bike_lane")
+
+    det3 = det.copy(); det3["space_label"] = ["crosswalk", "crosswalk", "sidewalk"]
+    r3 = rrc.summarize_riders(det3, flow=None, params=rrc.AssocParams())
+    check("crosswalk maps to roadway", r3.dominant_space.iloc[0] == "roadway")
+
+
 if __name__ == "__main__":
     test_containment_dedup()
     test_association_and_rescue()
     test_direction_rules()
     test_roi_priority()
+    test_time_gap_gate()
+    test_stationary_filter()
+    test_dominant_space()
     n = sum(PASS)
     print(f"\n{n}/{len(PASS)} tests passed")
     sys.exit(0 if n == len(PASS) else 1)
