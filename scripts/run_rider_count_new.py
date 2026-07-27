@@ -688,7 +688,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "captures_with_exif_ts": int(n_with_ts),
         },
         "params": {
-            "model": args.model, "conf": args.conf, "classes": sorted(args.classes),
+            "model": args.model, "conf": args.conf, "imgsz": getattr(args, "imgsz", 640),
+            "classes": sorted(args.classes),
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
             "min_move_px": getattr(args, "min_move_px", 25.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
             "max_time_gap_s": getattr(args, "max_time_gap_s", 30.0),
