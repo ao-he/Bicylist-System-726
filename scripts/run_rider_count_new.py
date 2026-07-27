@@ -421,7 +421,10 @@ def render_visualizations(det, riders, cfg, img_lookup, viz_dir, person_det=None
                 cv2.putText(img, label, (x1, max(24, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, th, cv2.LINE_AA)
         if len(person_det):
-            for _, r in person_det[person_det["img"] == img_name].iterrows():
+            pd_img = person_det[person_det["img"] == img_name]
+            if "space_label" in pd_img.columns:
+                pd_img = pd_img[pd_img["space_label"].isin(KEEP_LABELS)]  # viz: in-ROI only
+            for _, r in pd_img.iterrows():
                 x1, y1, x2, y2 = int(r.x1), int(r.y1), int(r.x2), int(r.y2)
                 cv2.rectangle(img, (x1, y1), (x2, y2), (255, 220, 0), 2)
                 for th, col in ((5, (0, 0, 0)), (2, (255, 255, 0))):
