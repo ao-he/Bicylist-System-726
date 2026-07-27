@@ -294,6 +294,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
 
     det = pd.DataFrame(det_rows)
     det.to_csv(outdir / "detections_raw.csv", index=False)
+    n_det_raw = len(det)
     pd.DataFrame(integrity).to_csv(outdir / "integrity_report.csv", index=False)
 
     if len(det) == 0:
@@ -303,12 +304,15 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         return summary
 
     det = nms_lite_per_frame(det, frame_col="img_num", score_col="score", iou_thr=getattr(args, "nms_iou", 0.70))
+    n_after_nms = len(det)
     det = dedup_contained_per_frame(det, iomin_thr=getattr(args, "iomin_thr", 0.60))
+    n_after_dedup = len(det)
 
     thr = FrameLabelThresholds(bottom_edge_npts=5, vote_min_pts=2)
     det["space_label"] = det.apply(
         lambda r: frame_space_label((r.x1, r.y1, r.x2, r.y2), roi, thr), axis=1)
     det = det[det["space_label"].isin(KEEP_LABELS)].copy()
+    n_in_roi = len(det)
 
     assoc = AssocParams(max_frame_gap=getattr(args, "assoc_gap", 3),
                         min_move_px=getattr(args, "min_move_px", 8.0),
@@ -386,6 +390,17 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "riders_crossing_flow": n_cross,
         "wrong_way_displacement": n_ww,
         "note": "wrong_way is provisional (displacement only); single-obs riders await orientation labels",
+        "funnel": {
+            "captures": int(len(img_paths)),
+            "unreadable": int(sum(1 for r in integrity if str(r["status"]).startswith("unreadable"))),
+            "truncated_recovered": int(sum(1 for r in integrity if r["status"] == "truncated_recovered")),
+            "detections_raw": int(n_det_raw),
+            "after_nms": int(n_after_nms),
+            "after_containment_dedup": int(n_after_dedup),
+            "in_roi": int(n_in_roi),
+            "riders": int(riders.shape[0]),
+            "person_candidates": int(len(person_rows)),
+        },
         "params": {
             "model": args.model, "conf": args.conf, "classes": sorted(args.classes),
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
@@ -536,3 +551,254 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Scene report: publication-style tables & figures
+# ---------------------------------------------------------------------------
+FACILITY_COLORS = {"sidewalk": "#2a78d6", "bike_lane": "#1baf7a",
+                   "roadway": "#d62728", "crosswalk": "#c05ec4"}
+DIRECTION_COLORS = {"along_flow": "#1baf7a", "against_flow": "#d62728",
+                    "cross_flow": "#2a78d6", "unknown": "#9a9890"}
+_INK, _INK2, _GRID = "#0b0b0b", "#52514e", "#e5e5e2"
+
+
+def _mpl_style():
+    import matplotlib as mpl
+    mpl.rcParams.update({
+        "figure.facecolor": "white", "axes.facecolor": "white",
+        "axes.edgecolor": _GRID, "axes.labelcolor": _INK2,
+        "axes.spines.top": False, "axes.spines.right": False,
+        "axes.grid": True, "grid.color": _GRID, "grid.linewidth": 0.8,
+        "xtick.color": _INK2, "ytick.color": _INK2,
+        "text.color": _INK, "font.size": 11,
+        "axes.titlesize": 13, "axes.titleweight": "bold",
+        "axes.titlecolor": _INK, "figure.dpi": 110, "savefig.dpi": 200,
+        "savefig.bbox": "tight",
+    })
+
+
+def qc_funnel_table(summary):
+    """Detection funnel with per-stage attrition — the QC record for defense."""
+    import pandas as pd
+    f = summary["funnel"]
+    rows = [
+        ("Captures on disk",            f["captures"],                "-"),
+        ("  unreadable files",          -f["unreadable"],             "corrupt beyond recovery, skipped"),
+        ("  truncated but recovered",   f["truncated_recovered"],     "decoded with tolerant reader (kept)"),
+        ("Raw bicycle detections",      f["detections_raw"],          f"YOLO {summary['params']['model']} conf>={summary['params']['conf']}"),
+        ("After NMS",                   f["after_nms"],               f"same-frame IoU >= {summary['params']['nms_iou']} removed"),
+        ("After containment dedup",     f["after_containment_dedup"], "nested duplicate boxes removed"),
+        ("Inside study ROI",            f["in_roi"],                  "bottom-edge vote in annotated facilities"),
+        ("Riders (counting unit)",      f["riders"],                  "nearby-capture association"),
+        ("Person-only candidates",      f["person_candidates"],       "possible missed riders, flagged for review"),
+    ]
+    df = pd.DataFrame(rows, columns=["Stage", "Count", "Rule"])
+    sty = (df.style.hide(axis="index")
+           .set_caption(f"Detection funnel — {summary['location_id']}")
+           .set_properties(subset=["Count"], **{"text-align": "right", "font-variant-numeric": "tabular-nums"})
+           .set_properties(subset=["Rule"], **{"color": _INK2, "font-size": "0.9em"})
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
+               {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 12px;"},
+               {"selector": "td", "props": f"padding: 4px 12px; border-bottom: 0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def riders_table(riders):
+    """Riders styled for reading: check marks, colored direction, tabular numbers."""
+    import pandas as pd
+    d = riders.copy()
+    for c in ("in_sidewalk_any", "in_bike_lane_any", "in_roadway_any"):
+        d[c] = d[c].map({True: "\u2713", False: ""})
+    d = d[["rider_id", "n_obs", "img_first", "img_last",
+           "in_sidewalk_any", "in_bike_lane_any", "in_roadway_any",
+           "disp_px", "direction_displacement", "cos_to_flow", "wrong_way_displacement"]]
+    d.columns = ["rider", "obs", "first capture", "last capture",
+                 "sidewalk", "bike lane", "roadway",
+                 "disp (px)", "direction", "cos", "wrong-way"]
+    def dir_color(v):
+        return f"color: {DIRECTION_COLORS.get(v, _INK)}; font-weight: 600;"
+    sty = (d.style.hide(axis="index")
+           .set_caption(f"Riders — one row per counted rider (n={len(d)})")
+           .format({"disp (px)": "{:.0f}", "cos": lambda v: "" if pd.isna(v) else f"{v:+.2f}",
+                    "wrong-way": lambda v: "" if pd.isna(v) else ("YES" if v else "no")}, na_rep="")
+           .map(dir_color, subset=["direction"])
+           .set_properties(subset=["sidewalk"], **{"color": FACILITY_COLORS["sidewalk"], "text-align": "center"})
+           .set_properties(subset=["bike lane"], **{"color": FACILITY_COLORS["bike_lane"], "text-align": "center"})
+           .set_properties(subset=["roadway"], **{"color": FACILITY_COLORS["roadway"], "text-align": "center"})
+           .set_properties(subset=["rider", "obs", "disp (px)", "cos"], **{"text-align": "right", "font-variant-numeric": "tabular-nums"})
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
+               {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 10px;"},
+               {"selector": "td", "props": f"padding: 3px 10px; border-bottom: 0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def fig_facility(riders, loc_id, save_to=None):
+    import matplotlib.pyplot as plt
+    _mpl_style()
+    n = len(riders)
+    vals = [int(riders["in_sidewalk_any"].sum()),
+            int(riders["in_bike_lane_any"].sum()),
+            int(riders["in_roadway_any"].sum())]
+    labels = ["Sidewalk", "Bike lane", "Roadway"]
+    colors = [FACILITY_COLORS["sidewalk"], FACILITY_COLORS["bike_lane"], FACILITY_COLORS["roadway"]]
+    fig, ax = plt.subplots(figsize=(6.5, 2.4))
+    bars = ax.barh(labels[::-1], vals[::-1], color=colors[::-1], height=0.55)
+    for b, v in zip(bars, vals[::-1]):
+        share = v / n if n else 0
+        ax.text(b.get_width() + max(vals + [1]) * 0.02, b.get_y() + b.get_height() / 2,
+                f"{v}  ({share:.0%})", va="center", color=_INK, fontweight=600)
+    ax.set_xlim(0, max(vals + [1]) * 1.22)
+    from matplotlib.ticker import MaxNLocator
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_title(f"Facility involvement — {loc_id}  (n={n} riders, not mutually exclusive)")
+    ax.grid(axis="y", visible=False)
+    if save_to:
+        fig.savefig(save_to)
+    return fig
+
+
+def fig_confidence(det, person, loc_id, save_to=None):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    _mpl_style()
+    fig, ax = plt.subplots(figsize=(6.5, 3))
+    bins = np.arange(0.10, 1.01, 0.05)
+    if person is not None and len(person):
+        ax.hist(person["score"], bins=bins, color="#c9c8c2", label=f"person candidates (n={len(person)})")
+    if len(det):
+        ax.hist(det["score"], bins=bins, color="#2a78d6", label=f"bicycle detections (n={len(det)})")
+    ax.set_xlabel("detection confidence")
+    ax.set_ylabel("count")
+    ax.set_title(f"Detector confidence — {loc_id}")
+    ax.legend(frameon=False)
+    if save_to:
+        fig.savefig(save_to)
+    return fig
+
+
+def fig_spatial(det, person, cfg, sample_image, loc_id, save_to=None):
+    """Spatial footprint: ROI outlines + bbox bottom-center of every detection."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPoly
+    from matplotlib.lines import Line2D
+    import numpy as np
+    _mpl_style()
+    fig, ax = plt.subplots(figsize=(9, 9 * cfg.h / cfg.w))
+    if sample_image is not None:
+        img, _ = read_image(sample_image)
+        if img is not None:
+            gray = img[:, :, ::-1].mean(axis=2)
+            ax.imshow(gray, cmap="gray", alpha=0.55, extent=[0, cfg.w, cfg.h, 0])
+    for rt, polys in cfg.rois.items():
+        col = FACILITY_COLORS.get(rt)
+        if not col:
+            continue
+        for poly in polys:
+            if len(poly) >= 3:
+                ax.add_patch(MplPoly(np.array(poly), closed=True, fill=True,
+                                     facecolor=col, alpha=0.10, edgecolor=col, linewidth=1.8))
+    if cfg.flow and cfg.flow.get("vector"):
+        v = cfg.flow["vector"]
+        ax.annotate("", xy=(v["x2"], v["y2"]), xytext=(v["x1"], v["y1"]),
+                    arrowprops=dict(arrowstyle="-|>", lw=2.5, color="#eda100"))
+    if person is not None and len(person):
+        pin = person[person["space_label"].isin(KEEP_LABELS)] if "space_label" in person.columns else person
+        ax.scatter((pin.x1 + pin.x2) / 2, pin.y2, s=46, marker="o", facecolor="none",
+                   edgecolor="#9a9890", linewidth=1.6, label="person candidate")
+    for lab in ["sidewalk", "bike_lane", "roadway", "crosswalk"]:
+        dd = det[det["space_label"] == lab] if len(det) else det
+        if len(dd):
+            ax.scatter((dd.x1 + dd.x2) / 2, dd.y2, s=60, color=FACILITY_COLORS[lab],
+                       edgecolor="white", linewidth=1.2, label=f"rider on {lab.replace('_', ' ')}")
+    ax.set_xlim(0, cfg.w); ax.set_ylim(cfg.h, 0)
+    ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
+    ax.set_title(f"Spatial footprint — {loc_id} (marker = bbox bottom center)")
+    ax.legend(frameon=False, loc="upper right", fontsize=9)
+    if save_to:
+        fig.savefig(save_to)
+    return fig
+
+
+def fig_contact_sheet(viz_dir, loc_id, max_n=8, save_to=None):
+    import matplotlib.pyplot as plt
+    import cv2
+    _mpl_style()
+    files = sorted(Path(viz_dir).glob("*_viz.jpg"))[:max_n]
+    if not files:
+        return None
+    cols = 2
+    rows = (len(files) + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(13, 3.8 * rows))
+    axes = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    for ax in axes[len(files):]:
+        ax.axis("off")
+    for ax, f in zip(axes, files):
+        im = cv2.cvtColor(cv2.imread(str(f)), cv2.COLOR_BGR2RGB)
+        ax.imshow(im); ax.axis("off")
+        ax.set_title(f.name.replace("_viz.jpg", ""), fontsize=9, color=_INK2)
+    fig.suptitle(f"Annotated captures — {loc_id}", fontweight="bold", y=1.0)
+    fig.tight_layout()
+    if save_to:
+        fig.savefig(save_to)
+    return fig
+
+
+def person_review_table(person):
+    """Review queue: person-only frames, highest confidence first."""
+    import pandas as pd
+    q = person[~person["frame_has_bicycle"]].copy() if "frame_has_bicycle" in person.columns else person.copy()
+    if not len(q):
+        return None
+    q["in_study_roi"] = q["space_label"].isin(KEEP_LABELS) if "space_label" in q.columns else False
+    q = q.sort_values(["in_study_roi", "score"], ascending=[False, False])
+    q = q[["img", "score", "space_label", "in_study_roi"]]
+    q.columns = ["capture", "confidence", "ROI label", "in study ROI"]
+    sty = (q.style.hide(axis="index")
+           .set_caption(f"Person-only candidates — review queue (n={len(q)}; confirm rider vs pedestrian)")
+           .format({"confidence": "{:.2f}"})
+           .map(lambda v: "color: #1baf7a; font-weight: 600;" if v is True else ("color: #9a9890;" if v is False else ""),
+                subset=["in study ROI"])
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
+               {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 10px;"},
+               {"selector": "td", "props": f"padding: 3px 10px; border-bottom: 0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
+def generate_report(outdir, roi_json, loc_id, show=True):
+    """Build all report tables & figures for one location run.
+    Figures are also saved to outdir/report/ as 200-dpi PNGs for the paper."""
+    import json as _json
+    import pandas as pd
+    outdir = Path(outdir)
+    rep_dir = outdir / "report"
+    rep_dir.mkdir(exist_ok=True)
+    summary = _json.loads((outdir / "scene_summary.json").read_text())
+    riders = pd.read_csv(outdir / "riders.csv") if (outdir / "riders.csv").exists() else pd.DataFrame()
+    det = pd.read_csv(outdir / "detections_riders.csv") if (outdir / "detections_riders.csv").exists() else pd.DataFrame()
+    person = pd.read_csv(outdir / "person_candidates.csv") if (outdir / "person_candidates.csv").exists() else pd.DataFrame()
+    from src.scene.roi_new import load_roi_config
+    cfg = load_roi_config(roi_json)
+
+    out = {"summary": summary}
+    out["funnel"] = qc_funnel_table(summary)
+    if len(riders):
+        out["riders_table"] = riders_table(riders)
+        out["fig_facility"] = fig_facility(riders, loc_id, save_to=rep_dir / "facility_involvement.png")
+    if len(person):
+        prt = person_review_table(person)
+        if prt is not None:
+            out["person_review"] = prt
+    if len(det) or len(person):
+        out["fig_confidence"] = fig_confidence(det, person, loc_id, save_to=rep_dir / "detector_confidence.png")
+        sample = None
+        vd = sorted((outdir / "viz").glob("*_viz.jpg")) if (outdir / "viz").exists() else []
+        out["fig_spatial"] = fig_spatial(det, person, cfg, None, loc_id, save_to=rep_dir / "spatial_footprint.png")
+        out["fig_contact"] = fig_contact_sheet(outdir / "viz", loc_id, save_to=rep_dir / "contact_sheet.png")
+    return out
