@@ -60,7 +60,7 @@ class AssocParams:
     max_frame_gap: int = 3        # image-number gap allowed within one rider
     max_dist_factor: float = 3.0  # gate = factor * mean bbox diagonal
     min_gate_px: float = 80.0     # lower bound for the distance gate
-    min_move_px: float = 8.0      # displacement needed for a direction call
+    min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
 
@@ -315,7 +315,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     n_in_roi = len(det)
 
     assoc = AssocParams(max_frame_gap=getattr(args, "assoc_gap", 3),
-                        min_move_px=getattr(args, "min_move_px", 8.0),
+                        min_move_px=getattr(args, "min_move_px", 25.0),
                         cos_gate=getattr(args, "cos_gate", 0.5))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
@@ -411,7 +411,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "params": {
             "model": args.model, "conf": args.conf, "classes": sorted(args.classes),
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
-            "min_move_px": getattr(args, "min_move_px", 8.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
+            "min_move_px": getattr(args, "min_move_px", 25.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
         },
     }
     (outdir / "scene_summary.json").write_text(json.dumps(summary, indent=2))
@@ -588,7 +588,7 @@ def main():
     ap.add_argument("--iomin-thr", type=float, default=0.60,
                     help="suppress same-frame box contained in a stronger box beyond this ratio")
     ap.add_argument("--assoc-gap", type=int, default=3)
-    ap.add_argument("--min-move-px", type=float, default=8.0)
+    ap.add_argument("--min-move-px", type=float, default=25.0)
     ap.add_argument("--cos-gate", type=float, default=0.5,
                     help="|cos| below this counts as crossing (WW undefined)")
     ap.add_argument("--save-crops", action="store_true")
