@@ -657,6 +657,82 @@ def _mpl_style():
     })
 
 
+
+def _wilson(k, n, z=1.96):
+    if n == 0:
+        return (0.0, 0.0)
+    ph = k / n
+    d = 1 + z * z / n
+    c = ph + z * z / (2 * n)
+    h = z * ((ph * (1 - ph) + z * z / (4 * n)) / n) ** 0.5
+    return ((c - h) / d, (c + h) / d)
+
+
+def scene_stats_table(riders, loc_id="", manual=None, n_person_candidates=None):
+    """Headline stats for one scene; optional manual=(along, against) benchmark."""
+    import pandas as pd
+    n = len(riders)
+    dd = riders["direction_displacement"]
+    along = int((dd == "along_flow").sum())
+    against = int((dd == "against_flow").sum())
+    cross = int((dd == "cross_flow").sum())
+    unknown = n - along - against - cross
+    dk = along + against
+    sw, bl, rd = (int(riders[c].sum()) for c in
+                  ("in_sidewalk_any", "in_bike_lane_any", "in_roadway_any"))
+
+    def pct(k, d):
+        return f"{k/d:.1%}" if d else "-"
+
+    def ww_cell(a, g):
+        d = a + g
+        if not d:
+            return "-"
+        lo, hi = _wilson(g, d)
+        return f"{g/d:.1%}  (95% CI {lo:.0%}-{hi:.0%})"
+
+    rows = [
+        ("Riders counted",              f"{n}",                        ""),
+        ("Direction known",             f"{dk}  ({pct(dk, n)})",       ""),
+        ("  along flow",                f"{along}",                    ""),
+        ("  against flow (wrong-way)",  f"{against}",                  ""),
+        ("Wrong-way rate",              ww_cell(along, against),       ""),
+        ("Crossing (perpendicular)",    f"{cross}",                    ""),
+        ("No direction (single frame / stationary)", f"{unknown}",     ""),
+        ("Sidewalk involvement",        f"{sw}  ({pct(sw, n)})",       ""),
+        ("Bike lane involvement",       f"{bl}  ({pct(bl, n)})",       ""),
+        ("Roadway involvement",         f"{rd}  ({pct(rd, n)})",       ""),
+    ]
+    if n_person_candidates is not None:
+        rows.append(("Person-only candidates (possible missed riders)",
+                     f"{n_person_candidates}", ""))
+    cols = ["Metric", "Pipeline", "Manual"]
+    if manual is not None:
+        ma, mg = manual
+        md = ma + mg
+        man = {"Riders counted": f"{md}",
+               "Direction known": f"{md}  (100%)",
+               "  along flow": f"{ma}",
+               "  against flow (wrong-way)": f"{mg}",
+               "Wrong-way rate": ww_cell(ma, mg)}
+        rows = [(m, v, man.get(m, "")) for m, v, _ in rows]
+    else:
+        cols = cols[:2]
+        rows = [r[:2] for r in rows]
+    df = pd.DataFrame(rows, columns=cols)
+    sty = (df.style.hide(axis="index")
+           .set_caption(f"Scene summary — {loc_id}" + ("  (Manual = human count benchmark)" if manual else ""))
+           .map(lambda v: "background-color: #fdecea; font-weight: 700;" if isinstance(v, str) and "CI" in v else "",
+                subset=cols[1:])
+           .set_properties(subset=cols[1:], **{"text-align": "right", "font-variant-numeric": "tabular-nums"})
+           .set_table_styles([
+               {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
+               {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 12px;"},
+               {"selector": "td", "props": f"padding: 4px 12px; border-bottom: 0.5px solid {_GRID};"},
+           ]))
+    return sty
+
+
 def qc_funnel_table(summary):
     """Detection funnel with per-stage attrition — the QC record for defense."""
     import pandas as pd
@@ -730,7 +806,7 @@ def fig_facility(riders, loc_id, save_to=None):
     for b, v in zip(bars, vals[::-1]):
         share = v / n if n else 0
         ax.text(b.get_width() + max(vals + [1]) * 0.02, b.get_y() + b.get_height() / 2,
-                f"{v}  ({share:.0%})", va="center", color=_INK, fontweight=600)
+                f"{v}  ({share:.0%})", va="center", color=_INK, fontweight="bold")
     ax.set_xlim(0, max(vals + [1]) * 1.22)
     from matplotlib.ticker import MaxNLocator
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -883,7 +959,7 @@ def direction_table(riders):
     return sty
 
 
-def generate_report(outdir, roi_json, loc_id, show=True):
+def generate_report(outdir, roi_json, loc_id, show=True, manual=None):
     """Build all report tables & figures for one location run.
     Figures are also saved to outdir/report/ as 200-dpi PNGs for the paper."""
     import json as _json
@@ -899,6 +975,10 @@ def generate_report(outdir, roi_json, loc_id, show=True):
     cfg = load_roi_config(roi_json)
 
     out = {"summary": summary}
+    if len(riders):
+        out["stats"] = scene_stats_table(
+            riders, loc_id, manual=manual,
+            n_person_candidates=summary.get("funnel", {}).get("person_candidates"))
     out["funnel"] = qc_funnel_table(summary)
     if len(riders):
         out["riders_table"] = riders_table(riders)
