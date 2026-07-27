@@ -63,9 +63,24 @@ def test_direction_rules():
     r3 = rrc.summarize_riders(det3, flow=flow, params=rrc.AssocParams())
     check("perpendicular -> cross_flow", r3.direction_displacement.iloc[0] == "cross_flow")
 
-    det4 = det.copy(); det4["assoc_rescue"] = [False, True]  # rescued pair
+    det4 = det.copy(); det4["assoc_rescue"] = [False, True]  # rescued pair, no EXIF
     r4 = rrc.summarize_riders(det4, flow=flow, params=rrc.AssocParams())
     check("rescued pair -> no direction", r4.direction_displacement.iloc[0] == "unknown")
+
+    # rescued pair INSIDE the camera's 2s double-shot window -> trusted
+    det5 = det4.copy(); det5["ts"] = [1000.0, 1002.0]
+    r5 = rrc.summarize_riders(det5, flow=flow, params=rrc.AssocParams())
+    check("2s rescue pair -> direction trusted", r5.direction_displacement.iloc[0] == "along_flow")
+    check("2s rescue pair tagged pair_rescue", r5.direction_source.iloc[0] == "pair_rescue")
+
+    # rescued pair 20s apart (queue risk) -> still distrusted
+    det6 = det4.copy(); det6["ts"] = [1000.0, 1020.0]
+    r6 = rrc.summarize_riders(det6, flow=flow, params=rrc.AssocParams())
+    check("20s rescue pair -> still unknown", r6.direction_displacement.iloc[0] == "unknown")
+
+    # opt-out restores blanket distrust
+    r7 = rrc.summarize_riders(det5, flow=flow, params=rrc.AssocParams(trust_rescue_pair_s=0))
+    check("trust_rescue_pair_s=0 disables", r7.direction_displacement.iloc[0] == "unknown")
 
 
 def test_roi_priority():
