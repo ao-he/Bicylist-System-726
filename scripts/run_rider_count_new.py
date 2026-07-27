@@ -779,10 +779,14 @@ def qc_funnel_table(summary):
     return sty
 
 
-def riders_table(riders):
+def riders_table(riders, max_rows=60):
     """Riders styled for reading: check marks, colored direction, tabular numbers."""
     import pandas as pd
     d = riders.copy()
+    total = len(d)
+    if total > max_rows:
+        order = {"against_flow": 0, "cross_flow": 1, "along_flow": 2, "unknown": 3}
+        d = d.sort_values(by="direction_displacement", key=lambda c: c.map(order)).head(max_rows)
     for c in ("in_sidewalk_any", "in_bike_lane_any", "in_roadway_any"):
         d[c] = d[c].map({True: "\u2713", False: ""})
     d = d[["rider_id", "n_obs", "img_first", "img_last",
@@ -794,7 +798,9 @@ def riders_table(riders):
     def dir_color(v):
         return f"color: {DIRECTION_COLORS.get(v, _INK)}; font-weight: 600;"
     sty = (d.style.hide(axis="index")
-           .set_caption(f"Riders — one row per counted rider (n={len(d)})")
+           .set_caption(f"Riders — one row per counted rider"
+                        + (f" (top {len(d)} of {total}, direction-known first; full list in riders.csv)"
+                           if total > len(d) else f" (n={total})"))
            .format({"disp (px)": "{:.0f}", "cos": lambda v: "" if pd.isna(v) else f"{v:+.2f}",
                     "wrong-way": lambda v: "" if pd.isna(v) else ("YES" if v else "no")}, na_rep="")
            .map(dir_color, subset=["direction"])
@@ -929,10 +935,12 @@ def person_review_table(person):
         return None
     q["in_study_roi"] = q["space_label"].isin(KEEP_LABELS) if "space_label" in q.columns else False
     q = q.sort_values(["in_study_roi", "score"], ascending=[False, False])
+    total = len(q)
+    q = q.head(30)
     q = q[["img", "score", "space_label", "in_study_roi"]]
     q.columns = ["capture", "confidence", "ROI label", "in study ROI"]
     sty = (q.style.hide(axis="index")
-           .set_caption(f"Person-only candidates — review queue (n={len(q)}; confirm rider vs pedestrian)")
+           .set_caption(f"Person-only candidates — top {len(q)} of {total} by (in-ROI, confidence); full list in person_candidates.csv")
            .format({"confidence": "{:.2f}"})
            .map(lambda v: "color: #1baf7a; font-weight: 600;" if v is True else ("color: #9a9890;" if v is False else ""),
                 subset=["in study ROI"])
