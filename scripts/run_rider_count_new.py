@@ -66,6 +66,8 @@ class AssocParams:
                                   # between 1s captures
     rescue_max_frac: float = 0.8  # but never farther than this fraction of the
                                   # frame width (guards against exit/enter merges)
+    rescue_area_ratio: float = 4.0   # rescue only when bbox areas are within this ratio
+    rescue_min_app_sim: float = 0.30 # and appearance correlation reaches this (when known)
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
@@ -95,6 +97,9 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
     g = det_df.sort_values(["img_num"]).copy()
     frame_width = float(g["x2"].max())
     next_rid = 0
+    last_app: Dict[int, object] = {}
+    rescued_det_keys = set()
+    rescue_flags: List[bool] = []
     # rid -> (last_img_num, last_bbox)
     active: Dict[int, Tuple[int, BBox]] = {}
     rider_ids: List[int] = []
@@ -133,10 +138,19 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
             recent = [rid for rid, (n, _) in active.items()
                       if img_num - n <= params.rescue_gap and rid not in used_rids]
             if len(recent) == 1:
-                c = _bottom_center(bbs[0])
-                lc = _bottom_center(active[recent[0]][1])
-                if abs(c[0] - lc[0]) <= params.rescue_max_frac * frame_width:
-                    assigned_det[0] = recent[0]
+                rid0 = recent[0]
+                bb0, bb1 = active[rid0][1], bbs[0]
+                c = _bottom_center(bb1)
+                lc = _bottom_center(bb0)
+                a0 = max(1.0, (bb0[2]-bb0[0]) * (bb0[3]-bb0[1]))
+                a1 = max(1.0, (bb1[2]-bb1[0]) * (bb1[3]-bb1[1]))
+                ratio = max(a0, a1) / min(a0, a1)
+                sim = _app_sim(last_app.get(rid0), rows[0].app if hasattr(rows[0], "app") else None)
+                if (abs(c[0] - lc[0]) <= params.rescue_max_frac * frame_width
+                        and ratio <= params.rescue_area_ratio
+                        and (sim is None or sim >= params.rescue_min_app_sim)):
+                    assigned_det[0] = rid0
+                    rescued_det_keys.add((int(img_num), 0))
 
         for i, bb in enumerate(bbs):
             rid = assigned_det.get(i)
@@ -144,9 +158,13 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
                 rid = next_rid
                 next_rid += 1
             rider_ids.append(rid)
+            rescue_flags.append((int(img_num), i) in rescued_det_keys)
             active[rid] = (int(img_num), bb)
+            if hasattr(rows[i], "app"):
+                last_app[rid] = rows[i].app
 
     g["rider_id"] = rider_ids
+    g["assoc_rescue"] = rescue_flags
     return g
 
 
@@ -188,6 +206,7 @@ def summarize_riders(
         rows.append({
             "rider_id": rid,
             "n_obs": len(g),
+            "assoc_rescue": bool(g["assoc_rescue"].any()) if "assoc_rescue" in g.columns else False,
             "img_first": first.img,
             "img_last": last.img,
             "img_num_first": int(first.img_num),
@@ -248,6 +267,33 @@ def collect_images(img_dir: Path, max_images=None):
     return paths[:max_images] if max_images else paths
 
 
+def _app_hist(img, x1, y1, x2, y2):
+    """Compact HS color histogram of a crop — appearance fingerprint."""
+    import cv2
+    h, w = img.shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(w, int(x2)), min(h, int(y2))
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return None
+    crop = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([crop], [0, 1], None, [8, 8], [0, 180, 0, 256])
+    cv2.normalize(hist, hist)
+    return hist.flatten().tolist()
+
+
+def _app_sim(a, b):
+    """Correlation of two fingerprints; None when either is missing."""
+    import numpy as np
+    if a is None or b is None or isinstance(a, float) or isinstance(b, float):
+        return None
+    try:
+        import cv2
+        return float(cv2.compareHist(np.array(a, np.float32), np.array(b, np.float32),
+                                     cv2.HISTCMP_CORREL))
+    except Exception:
+        return None
+
+
 def read_image(path: Path):
     """cv2 first; fall back to PIL with truncated-JPEG tolerance."""
     import cv2
@@ -301,6 +347,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
                 "img": p.name, "img_num": imgnum(p.name), "frame_global": i,
                 "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
                 "score": float(s), "cls": int(c),
+                "app": _app_hist(img, x1, y1, x2, y2),
             }
             if c in args.classes:
                 det_rows.append(row)
@@ -964,10 +1011,13 @@ def direction_table(riders):
     d["check image"] = d.apply(lambda r: ("WW" if r.wrong_way_displacement is True or r.wrong_way_displacement == True
                                           else ("CROSS" if r.direction_displacement == "cross_flow" else "OK"))
                                           + f"_R{int(r.rider_id):03d}.jpg", axis=1)
+    if "assoc_rescue" not in d.columns:
+        d["assoc_rescue"] = False
+    d["assoc"] = d["assoc_rescue"].map({True: "rescue", False: "gated"})
     d = d[["rider_id", "img_first", "img_last", "disp_px", "cos_to_flow",
-           "direction_displacement", "wrong_way_displacement", "check image"]]
+           "direction_displacement", "wrong_way_displacement", "assoc", "check image"]]
     d.columns = ["rider", "first frame", "last frame", "disp (px)", "cos",
-                 "direction", "wrong-way", "check image"]
+                 "direction", "wrong-way", "assoc", "check image"]
     def dir_color(v):
         return f"color: {DIRECTION_COLORS.get(v, _INK)}; font-weight: 700;"
     sty = (d.style.hide(axis="index")
@@ -977,6 +1027,8 @@ def direction_table(riders):
            .map(dir_color, subset=["direction"])
            .map(lambda v: "background-color: #fdecea; font-weight: 700;" if v == "YES" else "",
                 subset=["wrong-way"])
+           .map(lambda v: f"color: {_INK2}; font-style: italic;" if v == "rescue" else "",
+                subset=["assoc"])
            .set_table_styles([
                {"selector": "caption", "props": f"caption-side: top; font-weight: 600; color: {_INK}; padding: 6px 0;"},
                {"selector": "th", "props": f"text-align: left; color: {_INK2}; border-bottom: 1.5px solid {_INK}; padding: 4px 10px;"},
