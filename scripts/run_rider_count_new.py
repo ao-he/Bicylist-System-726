@@ -1077,3 +1077,87 @@ def generate_report(outdir, roi_json, loc_id, show=True, manual=None):
         out["fig_spatial"] = fig_spatial(det, person, cfg, None, loc_id, save_to=rep_dir / "spatial_footprint.png")
         out["fig_contact"] = fig_contact_sheet(outdir / "viz", loc_id, save_to=rep_dir / "contact_sheet.png")
     return out
+
+
+def generate_review_html(outdir, loc_id):
+    """One-page manual review tool: label rider crops (real/parked/pushing/
+    false-positive + heading) and person candidates (missed rider + heading /
+    pedestrian). Keyboard-friendly buttons; Export writes review_{loc}.csv.
+    Open the file in a browser from inside the output folder."""
+    import glob as _glob
+    import pandas as pd
+    outdir = Path(outdir)
+    riders = pd.read_csv(outdir / "riders.csv") if (outdir / "riders.csv").exists() else pd.DataFrame()
+    crops = {p.name: p for p in (outdir / "crops").glob("*.jpg")} if (outdir / "crops").exists() else {}
+    pcrops = sorted((outdir / "crops_person").glob("*.jpg")) if (outdir / "crops_person").exists() else []
+
+    rider_first_crop = {}
+    for name in sorted(crops):
+        rid = int(name.split("_")[0].replace("rider", ""))
+        rider_first_crop.setdefault(rid, f"crops/{name}")
+
+    def item(img_rel, iid, kind, extra=""):
+        return (f'<div class="item" data-id="{iid}" data-kind="{kind}">'
+                f'<img src="{img_rel}" loading="lazy"><div class="meta">{iid} {extra}</div>'
+                f'<div class="btns" data-for="{iid}"></div></div>')
+
+    rider_items, cand_items = [], []
+    for _, r in riders.iterrows():
+        rid = int(r.rider_id)
+        if rid in rider_first_crop:
+            extra = f"dir={r.direction_displacement}" if r.direction_displacement != "unknown" else ""
+            rider_items.append(item(rider_first_crop[rid], f"R{rid:04d}", "rider", extra))
+    for pth in pcrops:
+        cand_items.append(item(f"crops_person/{pth.name}", pth.stem, "candidate"))
+
+    html = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>Review — LOCID</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:16px;background:#fcfcfb;color:#0b0b0b}
+ h2{border-bottom:2px solid #0b0b0b;padding-bottom:4px}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+ .item{background:#fff;border:1px solid #e5e5e2;border-radius:8px;padding:8px}
+ .item img{width:100%;max-height:220px;object-fit:contain;background:#eee;border-radius:4px}
+ .meta{font-size:12px;color:#52514e;margin:4px 0}
+ .btns button{margin:2px;padding:4px 8px;font-size:12px;border:1px solid #ccc;border-radius:6px;background:#f6f6f4;cursor:pointer}
+ .btns button.sel{background:#2a78d6;color:#fff;border-color:#2a78d6}
+ #bar{position:sticky;top:0;background:#fcfcfb;padding:8px 0;border-bottom:1px solid #e5e5e2;z-index:9}
+ #bar button{padding:8px 14px;font-weight:600;border-radius:8px;border:1px solid #0b0b0b;background:#fff;cursor:pointer}
+ .done{outline:3px solid #1baf7a}
+</style></head><body>
+<div id="bar"><b>Review — LOCID</b>
+ <button onclick="exportCsv()">Export CSV</button>
+ <span id="prog"></span>
+ <span style="color:#52514e;font-size:13px">标注存在浏览器本地,随时可继续;导出生成 review_LOCID.csv</span></div>
+<h2>A. 已计数 riders — 确认真实性 + 朝向 (precision + 朝向金标准)</h2>
+<div class="grid">RIDERS</div>
+<h2>B. person 候选 — 漏检骑行者确认 (recall)</h2>
+<div class="grid">CANDS</div>
+<script>
+const OPTS={rider:["骑行:朝左","骑行:朝右","骑行:朝相机","骑行:背离","停放","推行","误检(摩托/滑板等)","看不清"],
+            candidate:["漏检骑行者:朝左","漏检骑行者:朝右","漏检骑行者:朝相机","漏检骑行者:背离","行人","误检","看不清"]};
+const KEY="review_LOCID";
+let store=JSON.parse(localStorage.getItem(KEY)||"{}");
+document.querySelectorAll(".item").forEach(it=>{
+  const id=it.dataset.id, kind=it.dataset.kind, bx=it.querySelector(".btns");
+  OPTS[kind].forEach(o=>{const b=document.createElement("button");b.textContent=o;
+    if(store[id]===o){b.classList.add("sel");it.classList.add("done");}
+    b.onclick=()=>{store[id]=o;localStorage.setItem(KEY,JSON.stringify(store));
+      bx.querySelectorAll("button").forEach(x=>x.classList.remove("sel"));
+      b.classList.add("sel");it.classList.add("done");prog();};
+    bx.appendChild(b);});
+});
+function prog(){const t=document.querySelectorAll(".item").length,d=Object.keys(store).length;
+  document.getElementById("prog").textContent=` ${d}/${t}`;}
+prog();
+function exportCsv(){let rows=[["item_id","kind","label"]];
+  document.querySelectorAll(".item").forEach(it=>{rows.push([it.dataset.id,it.dataset.kind,store[it.dataset.id]||""]);});
+  const csv=rows.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(",")).join("\n");
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv"}));
+  a.download="review_LOCID.csv";a.click();}
+</script></body></html>"""
+    html = (html.replace("LOCID", loc_id)
+                .replace("RIDERS", "\n".join(rider_items) or "<i>无 crops (跑的时候开启 save_crops)</i>")
+                .replace("CANDS", "\n".join(cand_items) or "<i>无 person 候选裁剪图</i>"))
+    out = outdir / f"review_{loc_id}.html"
+    out.write_text(html, encoding="utf-8")
+    return out, len(rider_items), len(cand_items)
