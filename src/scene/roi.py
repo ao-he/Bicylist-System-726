@@ -80,11 +80,24 @@ class ROIMaskEngine:
       - Keep stable: everything else depends on this.
     """
 
-    def __init__(self, cfg: ROIConfig):
+    #: label priority used when polygons overlap (highest first)
+    OVERLAP_PRIORITY = ("crosswalk", "bike_lane", "sidewalk", "roadway")
+
+    def __init__(self, cfg: ROIConfig, exclusive: bool = False):
+        """
+        exclusive=True resolves overlapping polygons by OVERLAP_PRIORITY:
+        each lower-priority mask has all higher-priority regions subtracted.
+        Annotations may then freely draw e.g. the roadway across the whole
+        street with the bike lane / sidewalk layered on top.
+        exclusive=False keeps the raw masks (legacy behavior).
+        """
         self.cfg = cfg
+        self.exclusive = exclusive
         self.masks: Dict[str, np.ndarray] = {}
         self.roi_area: Dict[str, int] = {}
         self._build_masks()
+        if exclusive:
+            self._make_exclusive()
 
     # ---------- build ----------
     def _build_masks(self) -> None:
@@ -99,6 +112,18 @@ class ROIMaskEngine:
                 cv2.fillPoly(mask, [pts], 1)
             self.masks[roi_type] = mask
             self.roi_area[roi_type] = int(mask.sum())
+
+    def _make_exclusive(self) -> None:
+        claimed = None
+        for roi_type in self.OVERLAP_PRIORITY:
+            mask = self.masks.get(roi_type)
+            if mask is None:
+                continue
+            if claimed is not None:
+                mask = (mask & ~claimed).astype(np.uint8)
+                self.masks[roi_type] = mask
+                self.roi_area[roi_type] = int(mask.sum())
+            claimed = mask if claimed is None else (claimed | mask)
 
     # ---------- helpers ----------
     @staticmethod
