@@ -136,7 +136,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         lambda r: frame_space_label((r.x1, r.y1, r.x2, r.y2), roi, thr), axis=1)
     det = det[det["space_label"].isin(KEEP_LABELS)].copy()
 
-    assoc = AssocParams(max_frame_gap=args.assoc_gap, min_move_px=args.min_move_px)
+    assoc = AssocParams(max_frame_gap=args.assoc_gap, min_move_px=args.min_move_px,
+                        cos_gate=args.cos_gate)
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
@@ -159,7 +160,10 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             cv2.imwrite(str(crop_dir / f"rider{int(r.rider_id):04d}_{Path(r.img).stem}.jpg"),
                         img[y1:y2, x1:x2])
 
-    n_dir = int((riders["direction_displacement"] != "unknown").sum())
+    n_along = int((riders["direction_displacement"] == "along_flow").sum())
+    n_against = int((riders["direction_displacement"] == "against_flow").sum())
+    n_cross = int((riders["direction_displacement"] == "cross_flow").sum())
+    n_dir = n_along + n_against
     n_ww = int((riders["wrong_way_displacement"] == True).sum())
     summary = {
         "location_id": loc_id,
@@ -172,6 +176,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "riders_in_bike_lane": int(riders["in_bike_lane_any"].sum()),
         "riders_in_roadway": int(riders["in_roadway_any"].sum()),
         "direction_known_displacement": n_dir,
+        "riders_crossing_flow": n_cross,
         "wrong_way_displacement": n_ww,
         "note": "wrong_way is provisional (displacement only); single-obs riders await orientation labels",
         "params": {
@@ -183,7 +188,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     (outdir / "scene_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"[{loc_id}] riders={summary['n_riders']} "
           f"(sidewalk {summary['riders_in_sidewalk']}, bike {summary['riders_in_bike_lane']}, "
-          f"road {summary['riders_in_roadway']}), dir-known {n_dir}, ww {n_ww}")
+          f"road {summary['riders_in_roadway']}), dir-known {n_dir}, cross {n_cross}, ww {n_ww}")
     return summary
 
 
@@ -213,6 +218,8 @@ def main():
     ap.add_argument("--nms-iou", type=float, default=0.70)
     ap.add_argument("--assoc-gap", type=int, default=3)
     ap.add_argument("--min-move-px", type=float, default=8.0)
+    ap.add_argument("--cos-gate", type=float, default=0.5,
+                    help="|cos| below this counts as crossing (WW undefined)")
     ap.add_argument("--save-crops", action="store_true")
     ap.add_argument("--max-images", type=int)
     ap.add_argument("--configs-dir", help="ROI config folder (default configs/locations)")

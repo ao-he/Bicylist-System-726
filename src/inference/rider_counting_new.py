@@ -36,6 +36,7 @@ class AssocParams:
     max_dist_factor: float = 3.0  # gate = factor * mean bbox diagonal
     min_gate_px: float = 80.0     # lower bound for the distance gate
     min_move_px: float = 8.0      # displacement needed for a direction call
+    cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
 
 def _bottom_center(bb: BBox) -> Tuple[float, float]:
@@ -133,8 +134,13 @@ def summarize_riders(
         if flow is not None and len(g) >= 2 and disp >= params.min_move_px:
             ux, uy = dx / disp, dy / disp
             cos = ux * float(flow[0]) + uy * float(flow[1])
-            direction = "along_flow" if cos >= 0 else "against_flow"
-            wrong_way = cos < 0
+            if abs(cos) < params.cos_gate:
+                # movement is mostly perpendicular to the reference flow:
+                # a crossing maneuver, for which wrong-way is undefined
+                direction = "cross_flow"
+            else:
+                direction = "along_flow" if cos >= 0 else "against_flow"
+                wrong_way = cos < 0
 
         rows.append({
             "rider_id": rid,
