@@ -233,7 +233,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     from ultralytics import YOLO
     model = YOLO(args.model)
 
-    det_rows, integrity = [], []
+    det_rows, person_rows, integrity = [], [], []
     for i, p in enumerate(img_paths):
         img, status = read_image(p)
         if img is None:
@@ -249,13 +249,16 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             r.boxes.conf.cpu().numpy(),
             r.boxes.cls.cpu().numpy().astype(int),
         ):
-            if c not in args.classes:
-                continue
-            det_rows.append({
+            row = {
                 "img": p.name, "img_num": imgnum(p.name), "frame_global": i,
                 "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
                 "score": float(s), "cls": int(c),
-            })
+            }
+            if c in args.classes:
+                det_rows.append(row)
+            elif c == 0 and getattr(args, "person_probe", True):
+                # person without a counted class: candidate for a missed rider
+                person_rows.append(row)
         if (i + 1) % 500 == 0:
             print(f"[{loc_id}]   {i+1}/{len(img_paths)} captures, {len(det_rows)} detections")
 
@@ -285,9 +288,35 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     riders = summarize_riders(det, flow, assoc)
     riders.to_csv(outdir / "riders.csv", index=False)
 
-    if getattr(args, "save_viz", True) and len(det):
+    person_df = pd.DataFrame(person_rows)
+    if len(person_df):
+        bike_imgs = set(det["img"]) if len(det) else set()
+        person_df["frame_has_bicycle"] = person_df["img"].isin(bike_imgs)
+        person_df["space_label"] = person_df.apply(
+            lambda r: frame_space_label((r.x1, r.y1, r.x2, r.y2), roi, thr), axis=1)
+        person_df.to_csv(outdir / "person_candidates.csv", index=False)
+        n_missed = int((~person_df["frame_has_bicycle"]).groupby(person_df["img"]).any().sum())
+        print(f"[{loc_id}] person candidates: {len(person_df)} dets, "
+              f"{n_missed} frames with person but NO bicycle (possible missed riders)")
+        if getattr(args, "save_crops", False):
+            import cv2
+            pc_dir = outdir / "crops_person"
+            pc_dir.mkdir(exist_ok=True)
+            by_img = {p.name: p for p in img_paths}
+            for _, r in person_df[~person_df["frame_has_bicycle"]].iterrows():
+                img, _ = read_image(by_img[r.img])
+                if img is None:
+                    continue
+                h, w = img.shape[:2]
+                px = int(0.2 * (r.x2 - r.x1)); py = int(0.2 * (r.y2 - r.y1))
+                x1 = max(0, int(r.x1) - px); y1 = max(0, int(r.y1) - py)
+                x2 = min(w, int(r.x2) + px); y2 = min(h, int(r.y2) + py)
+                cv2.imwrite(str(pc_dir / f"{Path(r.img).stem}_p{int(r.x1)}.jpg"), img[y1:y2, x1:x2])
+
+    if getattr(args, "save_viz", True) and (len(det) or len(person_df)):
         img_lookup = {p.name: p for p in img_paths}
-        n_viz = render_visualizations(det, riders, cfg, img_lookup, outdir / "viz")
+        n_viz = render_visualizations(det, riders, cfg, img_lookup, outdir / "viz",
+                                      person_det=person_df)
         print(f"[{loc_id}] viz: {n_viz} annotated captures -> {outdir/'viz'}")
 
     if getattr(args, "save_crops", False) and len(det):
@@ -317,6 +346,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "n_unreadable": int(sum(1 for r in integrity if str(r["status"]).startswith("unreadable"))),
         "n_detections": int(len(det)),
         "n_riders": int(riders.shape[0]),
+        "n_person_candidates": int(len(person_rows)),
         "n_riders_multi_obs": int((riders["n_obs"] >= 2).sum()),
         "riders_in_sidewalk": int(riders["in_sidewalk_any"].sum()),
         "riders_in_bike_lane": int(riders["in_bike_lane_any"].sum()),
@@ -345,14 +375,19 @@ VIZ_COLORS = {  # BGR
 }
 
 
-def render_visualizations(det, riders, cfg, img_lookup, viz_dir):
+def render_visualizations(det, riders, cfg, img_lookup, viz_dir, person_det=None):
     """One annotated JPG per capture that contains a kept detection:
     ROI overlay + flow arrow + bbox + rider id / facility / direction."""
     import cv2
     viz_dir.mkdir(parents=True, exist_ok=True)
     info = riders.set_index("rider_id")
     n = 0
-    for img_name, g in det.groupby("img"):
+    import pandas as pd
+    if person_det is None:
+        person_det = pd.DataFrame()
+    all_imgs = sorted(set(det["img"]) | (set(person_det["img"]) if len(person_det) else set()))
+    for img_name in all_imgs:
+        g = det[det["img"] == img_name] if len(det) else det
         src = img_lookup.get(img_name)
         if src is None:
             continue
@@ -385,6 +420,13 @@ def render_visualizations(det, riders, cfg, img_lookup, viz_dir):
             for th, col in ((5, (0, 0, 0)), (2, (255, 255, 255))):
                 cv2.putText(img, label, (x1, max(24, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, th, cv2.LINE_AA)
+        if len(person_det):
+            for _, r in person_det[person_det["img"] == img_name].iterrows():
+                x1, y1, x2, y2 = int(r.x1), int(r.y1), int(r.x2), int(r.y2)
+                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 220, 0), 2)
+                for th, col in ((5, (0, 0, 0)), (2, (255, 255, 0))):
+                    cv2.putText(img, f"person? {r.score:.2f}", (x1, max(24, y1 - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, th, cv2.LINE_AA)
         cv2.imwrite(str(viz_dir / f"{Path(img_name).stem}_viz.jpg"), img)
         n += 1
     return n
