@@ -79,12 +79,19 @@ class AssocParams:
                                           # (validated at loc_04/04-2: rescue WW 93-94% vs
                                           # manual ~26-28%); rescue merges count riders but
                                           # never contribute a displacement direction
-    trust_rescue_pair_s: float = 4.0      # EXCEPTION: a rescued chain whose EXIF span is
-                                          # within this window is the camera's documented
-                                          # double-shot (two images ~2s apart) of one fast
-                                          # rider — its displacement is real. Direction is
-                                          # trusted and tagged direction_source="pair_rescue"
-                                          # so it can be validated separately. 0 disables.
+    trust_rescue_pair_s: float = 0.0      # EXPERIMENTAL, default OFF. Trusting rescued
+                                          # chains inside the camera's ~2s double-shot
+                                          # window FAILED validation: at loc_04 the trusted
+                                          # pairs were 16/16 against-flow (manual 25.7%,
+                                          # binomial p~1e-9) and at loc_15 23/23 along
+                                          # (manual 20.2% WW) — the queue-swap artifact
+                                          # survives inside the 2s window and its sign
+                                          # depends on camera geometry. Passed cleanly at
+                                          # loc_12/16/17, but without a validated
+                                          # discriminator (appearance-sim gate is future
+                                          # work) it stays opt-in. >0 enables, tagging
+                                          # directions direction_source="pair_rescue" with
+                                          # per-scene counters for validation.
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
     max_time_gap_s: float = 30.0  # motion-triggered cameras: consecutive image numbers can
@@ -244,8 +251,8 @@ def summarize_riders(
         # when the whole chain sits inside the camera's ~2s double-shot window:
         # that is one fast rider's genuine displacement
         pair_ok = (rescued and dwell is not None
-                   and getattr(params, "trust_rescue_pair_s", 4.0) > 0
-                   and dwell <= getattr(params, "trust_rescue_pair_s", 4.0))
+                   and getattr(params, "trust_rescue_pair_s", 0.0) > 0
+                   and dwell <= getattr(params, "trust_rescue_pair_s", 0.0))
         direction_trusted = params.trust_rescue_direction or not rescued or pair_ok
         direction_source = None
         if flow is not None and len(g) >= 2 and disp >= params.min_move_px and direction_trusted:
@@ -574,7 +581,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
                         min_move_px=getattr(args, "min_move_px", 25.0),
                         cos_gate=getattr(args, "cos_gate", 0.5),
                         max_time_gap_s=getattr(args, "max_time_gap_s", 30.0),
-                        trust_rescue_pair_s=getattr(args, "trust_rescue_pair_s", 4.0))
+                        trust_rescue_pair_s=getattr(args, "trust_rescue_pair_s", 0.0))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
@@ -693,7 +700,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
             "min_move_px": getattr(args, "min_move_px", 25.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
             "max_time_gap_s": getattr(args, "max_time_gap_s", 30.0),
-            "trust_rescue_pair_s": getattr(args, "trust_rescue_pair_s", 4.0),
+            "trust_rescue_pair_s": getattr(args, "trust_rescue_pair_s", 0.0),
             "stationary_filter": bool(getattr(args, "stationary_filter", True)),
             "stationary_radius_px": getattr(args, "stationary_radius", 30.0),
             "stationary_min_hits": getattr(args, "stationary_hits", 6),
@@ -883,10 +890,10 @@ def main():
     ap.add_argument("--max-time-gap-s", type=float, default=30.0,
                     help="EXIF capture-time gap that always breaks association "
                          "(motion-triggered frames can be minutes apart; 0 disables)")
-    ap.add_argument("--trust-rescue-pair-s", type=float, default=4.0,
-                    help="trust a rescued chain's direction when its EXIF span is "
-                         "within this window (the camera's ~2s double-shot of one "
-                         "fast rider); 0 restores blanket rescue distrust")
+    ap.add_argument("--trust-rescue-pair-s", type=float, default=0.0,
+                    help="EXPERIMENTAL (failed validation at queue-heavy sites, "
+                         "default off): trust a rescued chain's direction when its "
+                         "EXIF span is within this window; 0 = blanket distrust")
     ap.add_argument("--no-stationary-filter", dest="stationary_filter", action="store_false",
                     help="keep parked-bike clusters (on by default)")
     ap.add_argument("--stationary-radius", type=float, default=30.0,
