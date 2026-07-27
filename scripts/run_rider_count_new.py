@@ -145,6 +145,11 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     riders = summarize_riders(det, flow, assoc)
     riders.to_csv(outdir / "riders.csv", index=False)
 
+    if getattr(args, "save_viz", True) and len(det):
+        img_lookup = {p.name: p for p in img_paths}
+        n_viz = render_visualizations(det, riders, cfg, img_lookup, outdir / "viz")
+        print(f"[{loc_id}] viz: {n_viz} annotated captures -> {outdir/'viz'}")
+
     if getattr(args, "save_crops", False) and len(det):
         import cv2
         crop_dir = outdir / "crops"
@@ -193,6 +198,58 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     return summary
 
 
+
+VIZ_COLORS = {  # BGR
+    "roadway": (60, 60, 230), "bike_lane": (80, 190, 60),
+    "sidewalk": (220, 190, 40), "crosswalk": (230, 60, 230),
+}
+
+
+def render_visualizations(det, riders, cfg, img_lookup, viz_dir):
+    """One annotated JPG per capture that contains a kept detection:
+    ROI overlay + flow arrow + bbox + rider id / facility / direction."""
+    import cv2
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    info = riders.set_index("rider_id")
+    n = 0
+    for img_name, g in det.groupby("img"):
+        src = img_lookup.get(img_name)
+        if src is None:
+            continue
+        img, _ = read_image(src)
+        if img is None:
+            continue
+        overlay = img.copy()
+        for rt, polys in cfg.rois.items():
+            col = VIZ_COLORS.get(rt)
+            if not col:
+                continue
+            for poly in polys:
+                if len(poly) < 3:
+                    continue
+                pts = np.array([[int(x), int(y)] for x, y in poly], np.int32).reshape(-1, 1, 2)
+                cv2.fillPoly(overlay, [pts], col)
+                cv2.polylines(img, [pts], True, col, 2)
+        img = cv2.addWeighted(overlay, 0.18, img, 0.82, 0)
+        if cfg.flow and cfg.flow.get("vector"):
+            v = cfg.flow["vector"]
+            cv2.arrowedLine(img, (int(v["x1"]), int(v["y1"])), (int(v["x2"]), int(v["y2"])),
+                            (0, 165, 255), 4, tipLength=0.25)
+        for _, r in g.iterrows():
+            x1, y1, x2, y2 = int(r.x1), int(r.y1), int(r.x2), int(r.y2)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 165, 255), 3)
+            ri = info.loc[int(r.rider_id)]
+            label = f"R{int(r.rider_id)} {r.space_label} {ri.direction_displacement}"
+            if ri.wrong_way_displacement is True:
+                label += " WW!"
+            for th, col in ((5, (0, 0, 0)), (2, (255, 255, 255))):
+                cv2.putText(img, label, (x1, max(24, y1 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, th, cv2.LINE_AA)
+        cv2.imwrite(str(viz_dir / f"{Path(img_name).stem}_viz.jpg"), img)
+        n += 1
+    return n
+
+
 def find_img_dir(data_root: Path, loc_id: str):
     num = loc_id.split("_", 1)[1]                     # "04-2"
     plain = num.lstrip("0") or "0"                    # "4-2"
@@ -223,6 +280,8 @@ def main():
     ap.add_argument("--cos-gate", type=float, default=0.5,
                     help="|cos| below this counts as crossing (WW undefined)")
     ap.add_argument("--save-crops", action="store_true")
+    ap.add_argument("--no-viz", dest="save_viz", action="store_false",
+                    help="skip annotated visualization export (on by default)")
     ap.add_argument("--max-images", type=int)
     ap.add_argument("--configs-dir", help="ROI config folder (default configs/locations)")
     args = ap.parse_args()
