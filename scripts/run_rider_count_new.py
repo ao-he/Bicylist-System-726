@@ -60,6 +60,12 @@ class AssocParams:
     max_frame_gap: int = 3        # image-number gap allowed within one rider
     max_dist_factor: float = 3.0  # gate = factor * mean bbox diagonal
     min_gate_px: float = 80.0     # lower bound for the distance gate
+    burst_rescue: bool = True     # burst pairs (gap <= rescue_gap) with a single
+    rescue_gap: int = 2           # detection on each side associate regardless of
+                                  # distance: a fast rider crosses most of the frame
+                                  # between 1s captures
+    rescue_max_frac: float = 0.8  # but never farther than this fraction of the
+                                  # frame width (guards against exit/enter merges)
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
@@ -87,6 +93,7 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
         return det_df.assign(rider_id=pd.Series(dtype=int))
 
     g = det_df.sort_values(["img_num"]).copy()
+    frame_width = float(g["x2"].max())
     next_rid = 0
     # rid -> (last_img_num, last_bbox)
     active: Dict[int, Tuple[int, BBox]] = {}
@@ -119,6 +126,17 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
                 continue
             assigned_det[i] = rid
             used_rids.add(rid)
+
+        # burst rescue: single detection, single recent rider -> same person,
+        # even when the fast-rider displacement exceeds the spatial gate
+        if params.burst_rescue and len(bbs) == 1 and not assigned_det:
+            recent = [rid for rid, (n, _) in active.items()
+                      if img_num - n <= params.rescue_gap and rid not in used_rids]
+            if len(recent) == 1:
+                c = _bottom_center(bbs[0])
+                lc = _bottom_center(active[recent[0]][1])
+                if abs(c[0] - lc[0]) <= params.rescue_max_frac * frame_width:
+                    assigned_det[0] = recent[0]
 
         for i, bb in enumerate(bbs):
             rid = assigned_det.get(i)
