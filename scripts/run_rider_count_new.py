@@ -84,7 +84,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     roi = ExclusiveROIMaskEngine(cfg)
     flow = roi.flow_vector()
 
-    img_paths = collect_images(Path(img_dir), args.max_images)
+    img_paths = collect_images(Path(img_dir), getattr(args, "max_images", None))
     if not img_paths:
         print(f"[{loc_id}] no images in {img_dir}")
         return None
@@ -129,22 +129,23 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         print(f"[{loc_id}] no detections")
         return summary
 
-    det = nms_lite_per_frame(det, frame_col="img_num", score_col="score", iou_thr=args.nms_iou)
+    det = nms_lite_per_frame(det, frame_col="img_num", score_col="score", iou_thr=getattr(args, "nms_iou", 0.70))
 
     thr = FrameLabelThresholds(bottom_edge_npts=5, vote_min_pts=2)
     det["space_label"] = det.apply(
         lambda r: frame_space_label((r.x1, r.y1, r.x2, r.y2), roi, thr), axis=1)
     det = det[det["space_label"].isin(KEEP_LABELS)].copy()
 
-    assoc = AssocParams(max_frame_gap=args.assoc_gap, min_move_px=args.min_move_px,
-                        cos_gate=args.cos_gate)
+    assoc = AssocParams(max_frame_gap=getattr(args, "assoc_gap", 3),
+                        min_move_px=getattr(args, "min_move_px", 8.0),
+                        cos_gate=getattr(args, "cos_gate", 0.5))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
     riders = summarize_riders(det, flow, assoc)
     riders.to_csv(outdir / "riders.csv", index=False)
 
-    if args.save_crops and len(det):
+    if getattr(args, "save_crops", False) and len(det):
         import cv2
         crop_dir = outdir / "crops"
         crop_dir.mkdir(exist_ok=True)
@@ -181,8 +182,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "note": "wrong_way is provisional (displacement only); single-obs riders await orientation labels",
         "params": {
             "model": args.model, "conf": args.conf, "classes": sorted(args.classes),
-            "nms_iou": args.nms_iou, "assoc_max_frame_gap": args.assoc_gap,
-            "min_move_px": args.min_move_px, "roi_exclusive": True,
+            "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
+            "min_move_px": getattr(args, "min_move_px", 8.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
         },
     }
     (outdir / "scene_summary.json").write_text(json.dumps(summary, indent=2))
