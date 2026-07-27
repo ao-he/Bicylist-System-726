@@ -219,7 +219,7 @@ def main():
     args = ap.parse_args()
     args.classes = set(args.classes)
 
-    cfg_dir = Path(args.configs_dir) if args.configs_dir else REPO_ROOT / "configs" / "locations"
+    cfg_dir = Path(args.configs_dir) if args.configs_dir else REPO_ROOT / "configs" / "locations_new"
     out_root = REPO_ROOT / "outputs_new"
 
     if args.batch:
