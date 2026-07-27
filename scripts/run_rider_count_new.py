@@ -101,7 +101,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             continue
         if status != "ok":
             integrity.append({"img": p.name, "status": status})
-        r = model(img, conf=args.conf, verbose=False)[0]
+        r = model(img, conf=args.conf, imgsz=getattr(args, "imgsz", 640), verbose=False)[0]
         if r.boxes is None:
             continue
         for (x1, y1, x2, y2), s, c in zip(
@@ -214,6 +214,7 @@ def main():
     ap.add_argument("--data-root")
     ap.add_argument("--model", default="yolov8n.pt")
     ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--imgsz", type=int, default=640, help="inference size; 1280 helps small/night riders")
     ap.add_argument("--classes", type=int, nargs="+", default=[1])
     ap.add_argument("--nms-iou", type=float, default=0.70)
     ap.add_argument("--assoc-gap", type=int, default=3)
