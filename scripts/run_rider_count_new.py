@@ -1597,6 +1597,66 @@ def facility_comparison_table(df, manual_df):
     return sty
 
 
+def pair_diagnostic(outdir, img_dir, loc_id="", pair_window_s=4.0):
+    """Why is a rider's direction unknown? Decompose the coverage gap.
+
+    The cameras shoot two images ~2 s apart per trigger (per Deborah), so in
+    principle almost every event should have a displacement pair. This audit
+    classifies every direction-unknown rider into:
+      no_pair_on_disk      no second capture within pair_window_s exists at all
+      pair_missed          a paired capture exists but the rider was not
+                           detected in it (blur / occlusion / left the frame)
+      too_little_motion    seen in >=2 frames but moved < min_move_px
+      rescue_distrusted    associated by burst rescue; direction withheld
+    Reads EXIF times of all captures once and caches them to
+    outdir/capture_index.csv so re-runs are instant.
+    """
+    outdir = Path(outdir)
+    riders = pd.read_csv(outdir / "riders.csv")
+    idx_csv = outdir / "capture_index.csv"
+    if idx_csv.exists():
+        cap = pd.read_csv(idx_csv)
+    else:
+        rows = [{"img": p.name, "img_num": imgnum(p.name), "ts": read_exif_ts(p)}
+                for p in collect_images(Path(img_dir))]
+        cap = pd.DataFrame(rows)
+        cap.to_csv(idx_csv, index=False)
+    ts_by_num = {int(r.img_num): r.ts for _, r in cap.iterrows() if pd.notna(r.ts)}
+
+    def has_pair(img_num):
+        t = ts_by_num.get(int(img_num))
+        if t is None:
+            return None   # no EXIF: cannot audit this one
+        return any(abs(ts_by_num[n] - t) <= pair_window_s
+                   for n in (img_num - 1, img_num + 1) if n in ts_by_num)
+
+    unknown = riders[~riders["direction_displacement"].isin(
+        ["along_flow", "against_flow", "cross_flow"])]
+    counts = {"no_pair_on_disk": 0, "pair_missed": 0, "too_little_motion": 0,
+              "rescue_distrusted": 0, "no_exif": 0}
+    for _, r in unknown.iterrows():
+        if r.get("assoc_rescue") is True or r.get("assoc_rescue") == True:
+            counts["rescue_distrusted"] += 1
+        elif int(r.n_obs) >= 2:
+            counts["too_little_motion"] += 1
+        else:
+            p = has_pair(int(r.img_num_first))
+            if p is None:
+                counts["no_exif"] += 1
+            elif p:
+                counts["pair_missed"] += 1
+            else:
+                counts["no_pair_on_disk"] += 1
+    n_unknown = len(unknown)
+    res = {"location": loc_id or outdir.name, "riders": len(riders),
+           "direction_known": len(riders) - n_unknown, "unknown": n_unknown}
+    res.update(counts)
+    if n_unknown:
+        res["pct_pair_missed"] = counts["pair_missed"] / n_unknown
+        res["pct_no_pair"] = counts["no_pair_on_disk"] / n_unknown
+    return res
+
+
 def analyze_review_csv(outdir, loc_id):
     """Metrics from a labeled review_<loc>.csv exported by the review page."""
     import pandas as pd

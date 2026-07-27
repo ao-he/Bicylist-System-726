@@ -156,6 +156,43 @@ def test_dominant_space():
     check("crosswalk maps to roadway", r3.dominant_space.iloc[0] == "roadway")
 
 
+def test_pair_diagnostic():
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    pd.DataFrame([
+        # single obs, neighbour capture 2s later exists -> pair_missed
+        dict(rider_id=0, n_obs=1, assoc_rescue=False, img_num_first=5,
+             direction_displacement="unknown"),
+        # single obs, no neighbour within 4s -> no_pair_on_disk
+        dict(rider_id=1, n_obs=1, assoc_rescue=False, img_num_first=10,
+             direction_displacement="unknown"),
+        # two frames but tiny displacement -> too_little_motion
+        dict(rider_id=2, n_obs=2, assoc_rescue=False, img_num_first=20,
+             direction_displacement="unknown"),
+        # rescued pair -> rescue_distrusted
+        dict(rider_id=3, n_obs=2, assoc_rescue=True, img_num_first=30,
+             direction_displacement="unknown"),
+        # direction known -> not audited
+        dict(rider_id=4, n_obs=2, assoc_rescue=False, img_num_first=40,
+             direction_displacement="along_flow"),
+    ]).to_csv(d / "riders.csv", index=False)
+    pd.DataFrame([
+        dict(img="IM_5.jpg", img_num=5, ts=1000.0),
+        dict(img="IM_6.jpg", img_num=6, ts=1002.0),     # the 2s pair
+        dict(img="IM_10.jpg", img_num=10, ts=2000.0),
+        dict(img="IM_11.jpg", img_num=11, ts=2600.0),   # 10 min later: not a pair
+        dict(img="IM_20.jpg", img_num=20, ts=3000.0),
+        dict(img="IM_30.jpg", img_num=30, ts=4000.0),
+        dict(img="IM_40.jpg", img_num=40, ts=5000.0),
+    ]).to_csv(d / "capture_index.csv", index=False)
+    res = rrc.pair_diagnostic(d, img_dir="unused", loc_id="syn")
+    check("pair diagnostic: unknown total", res["unknown"] == 4)
+    check("pair diagnostic: pair_missed", res["pair_missed"] == 1)
+    check("pair diagnostic: no_pair_on_disk", res["no_pair_on_disk"] == 1)
+    check("pair diagnostic: too_little_motion", res["too_little_motion"] == 1)
+    check("pair diagnostic: rescue_distrusted", res["rescue_distrusted"] == 1)
+
+
 if __name__ == "__main__":
     test_containment_dedup()
     test_association_and_rescue()
@@ -164,6 +201,7 @@ if __name__ == "__main__":
     test_time_gap_gate()
     test_stationary_filter()
     test_dominant_space()
+    test_pair_diagnostic()
     n = sum(PASS)
     print(f"\n{n}/{len(PASS)} tests passed")
     sys.exit(0 if n == len(PASS) else 1)
