@@ -125,6 +125,18 @@ def test_stationary_filter():
                          for i in range(6)])
     check("waiting cyclist (60s) spared", not rrc.flag_stationary_detections(det2).any())
 
+    # busy chokepoint (the loc_17 failure): 10 DIFFERENT riders hit the same
+    # spot of a narrow bike lane over an hour, but 90 other captures in the
+    # window show riders elsewhere -> density is low, cluster must survive
+    rows3 = [dict(img=f"c{i}", img_num=1 + 10 * i, x1=500, y1=300, x2=560,
+                  y2=400, score=.9, ts=1000.0 + 360.0 * i) for i in range(10)]
+    rows3 += [dict(img=f"o{i}", img_num=2 + i, x1=900 + 7 * i, y1=310,
+                   x2=960 + 7 * i, y2=410, score=.9, ts=1005.0 + 36.0 * i)
+              for i in range(90)]
+    det3 = pd.DataFrame(rows3)
+    flags3 = rrc.flag_stationary_detections(det3)
+    check("busy chokepoint NOT flagged (density gate)", not flags3[:10].any())
+
 
 def test_dominant_space():
     det = pd.DataFrame([  # 2 sidewalk frames, 1 roadway frame -> sidewalk dominant

@@ -361,7 +361,8 @@ def read_exif_ts(path):
 
 
 def flag_stationary_detections(det, radius_px=30.0, min_hits=6,
-                               min_span_frames=50, min_span_s=300.0):
+                               min_span_frames=50, min_span_s=300.0,
+                               min_density=0.6):
     """Flag detections of parked bicycles.
 
     A parked bike fires a detection at the same spot every time a passer-by
@@ -371,11 +372,21 @@ def flag_stationary_detections(det, radius_px=30.0, min_hits=6,
     >= min_hits distinct captures whose span exceeds min_span_s EXIF seconds
     (or min_span_frames image numbers when no timestamps exist) cannot be one
     passing rider — a cyclist waiting at a light clears in well under 5
-    minutes. Returns a boolean Series aligned with det.index.
+    minutes.
+
+    min_density separates a parked object from a busy chokepoint. An object
+    physically present in the scene appears in (nearly) every capture inside
+    its time window — whoever trips the shutter, the parked bike is in view.
+    Hundreds of DIFFERENT riders passing one spot of a busy bike lane also
+    build a long-span cluster (loc_17: 413 riders through one lane), but each
+    appears in only a scattered fraction of the window's captures. Clusters
+    hitting fewer than min_density of the window's captures are kept as
+    riders. Returns a boolean Series aligned with det.index.
     """
     flags = pd.Series(False, index=det.index)
     if det is None or len(det) == 0:
         return flags
+    all_frames = np.array(sorted(pd.unique(det["img_num"])))
     have_ts = "ts" in det.columns
     clusters = []  # [cx, cy, n, frame_set, ts_list, idx_list]
     for idx, r in det.sort_values("img_num").iterrows():
@@ -403,8 +414,13 @@ def flag_stationary_detections(det, radius_px=30.0, min_hits=6,
             span_ok = (max(c[4]) - min(c[4])) >= min_span_s
         else:
             span_ok = (max(c[3]) - min(c[3])) >= min_span_frames
-        if span_ok:
-            flags.loc[c[5]] = True
+        if not span_ok:
+            continue
+        lo, hi = min(c[3]), max(c[3])
+        n_window = int(((all_frames >= lo) & (all_frames <= hi)).sum())
+        if len(c[3]) / max(n_window, 1) < min_density:
+            continue   # busy chokepoint: many riders share the spot, none stays
+        flags.loc[c[5]] = True
     return flags
 
 
@@ -443,47 +459,68 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         return None
     print(f"[{loc_id}] {len(img_paths)} captures, flow={'yes' if flow else 'none'}")
 
-    from ultralytics import YOLO
-    model = YOLO(args.model)
+    raw_csv = outdir / "detections_raw.csv"
+    reuse = bool(getattr(args, "reuse_detections", False)) and raw_csv.exists()
+    if reuse:
+        # detector output is unchanged — only post-processing differs, so skip
+        # the (hours-long) YOLO pass and replay from the saved raw detections
+        import ast
+        det = pd.read_csv(raw_csv)
+        if "app" in det.columns:
+            det["app"] = det["app"].apply(
+                lambda v: ast.literal_eval(v) if isinstance(v, str) else None)
+        if "ts" not in det.columns:
+            det["ts"] = None
+        try:
+            integrity = pd.read_csv(outdir / "integrity_report.csv").to_dict("records")
+        except Exception:
+            integrity = []
+        person_rows = []
+        n_with_ts = int(det.dropna(subset=["ts"])["img"].nunique()) if "ts" in det.columns else 0
+        print(f"[{loc_id}] reusing detections_raw.csv ({len(det)} detections) — YOLO skipped")
+        det_rows = None
+    else:
+        from ultralytics import YOLO
+        model = YOLO(args.model)
+        det_rows, person_rows, integrity = [], [], []
+        n_with_ts = 0
+        for i, p in enumerate(img_paths):
+            img, status = read_image(p)
+            if img is None:
+                integrity.append({"img": p.name, "status": status})
+                continue
+            if status != "ok":
+                integrity.append({"img": p.name, "status": status})
+            ts = read_exif_ts(p)
+            if ts is not None:
+                n_with_ts += 1
+            r = model(img, conf=args.conf, imgsz=getattr(args, "imgsz", 640), verbose=False)[0]
+            if r.boxes is None:
+                continue
+            for (x1, y1, x2, y2), s, c in zip(
+                r.boxes.xyxy.cpu().numpy(),
+                r.boxes.conf.cpu().numpy(),
+                r.boxes.cls.cpu().numpy().astype(int),
+            ):
+                row = {
+                    "img": p.name, "img_num": imgnum(p.name), "frame_global": i, "ts": ts,
+                    "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
+                    "score": float(s), "cls": int(c),
+                    "app": _app_hist(img, x1, y1, x2, y2),
+                }
+                if c in args.classes:
+                    det_rows.append(row)
+                elif c == 0 and getattr(args, "person_probe", True):
+                    # person without a counted class: candidate for a missed rider
+                    person_rows.append(row)
+            if (i + 1) % 500 == 0:
+                print(f"[{loc_id}]   {i+1}/{len(img_paths)} captures, {len(det_rows)} detections")
 
-    det_rows, person_rows, integrity = [], [], []
-    n_with_ts = 0
-    for i, p in enumerate(img_paths):
-        img, status = read_image(p)
-        if img is None:
-            integrity.append({"img": p.name, "status": status})
-            continue
-        if status != "ok":
-            integrity.append({"img": p.name, "status": status})
-        ts = read_exif_ts(p)
-        if ts is not None:
-            n_with_ts += 1
-        r = model(img, conf=args.conf, imgsz=getattr(args, "imgsz", 640), verbose=False)[0]
-        if r.boxes is None:
-            continue
-        for (x1, y1, x2, y2), s, c in zip(
-            r.boxes.xyxy.cpu().numpy(),
-            r.boxes.conf.cpu().numpy(),
-            r.boxes.cls.cpu().numpy().astype(int),
-        ):
-            row = {
-                "img": p.name, "img_num": imgnum(p.name), "frame_global": i, "ts": ts,
-                "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
-                "score": float(s), "cls": int(c),
-                "app": _app_hist(img, x1, y1, x2, y2),
-            }
-            if c in args.classes:
-                det_rows.append(row)
-            elif c == 0 and getattr(args, "person_probe", True):
-                # person without a counted class: candidate for a missed rider
-                person_rows.append(row)
-        if (i + 1) % 500 == 0:
-            print(f"[{loc_id}]   {i+1}/{len(img_paths)} captures, {len(det_rows)} detections")
-
-    det = pd.DataFrame(det_rows)
-    det.to_csv(outdir / "detections_raw.csv", index=False)
+    if not reuse:
+        det = pd.DataFrame(det_rows)
+        det.to_csv(outdir / "detections_raw.csv", index=False)
+        pd.DataFrame(integrity).to_csv(outdir / "integrity_report.csv", index=False)
     n_det_raw = len(det)
-    pd.DataFrame(integrity).to_csv(outdir / "integrity_report.csv", index=False)
 
     if len(det) == 0:
         summary = {"location_id": loc_id, "n_captures": len(img_paths), "n_riders": 0}
@@ -509,7 +546,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             radius_px=getattr(args, "stationary_radius", 30.0),
             min_hits=getattr(args, "stationary_hits", 6),
             min_span_frames=getattr(args, "stationary_span_frames", 50),
-            min_span_s=getattr(args, "stationary_span_s", 300.0))
+            min_span_s=getattr(args, "stationary_span_s", 300.0),
+            min_density=getattr(args, "stationary_min_density", 0.6))
         n_stationary = int(stat_mask.sum())
         if n_stationary:
             det[stat_mask].to_csv(outdir / "stationary_objects.csv", index=False)
@@ -527,7 +565,16 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
     riders = summarize_riders(det, flow, assoc)
     riders.to_csv(outdir / "riders.csv", index=False)
 
-    person_df = pd.DataFrame(person_rows)
+    if reuse:
+        pc_csv = outdir / "person_candidates.csv"
+        try:
+            person_df = pd.read_csv(pc_csv) if pc_csv.exists() else pd.DataFrame()
+        except Exception:
+            person_df = pd.DataFrame()
+        n_person = len(person_df)
+    else:
+        person_df = pd.DataFrame(person_rows)
+        n_person = len(person_rows)
     if len(person_df):
         person_df = nms_lite_per_frame(person_df, frame_col="img_num", score_col="score", iou_thr=0.55)
         person_df = dedup_contained_per_frame(person_df, iomin_thr=0.55)
@@ -594,7 +641,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         "n_unreadable": int(sum(1 for r in integrity if str(r["status"]).startswith("unreadable"))),
         "n_detections": int(len(det)),
         "n_riders": int(riders.shape[0]),
-        "n_person_candidates": int(len(person_rows)),
+        "n_person_candidates": int(n_person),
         "n_riders_multi_obs": int((riders["n_obs"] >= 2).sum()),
         "riders_in_sidewalk": int(riders["in_sidewalk_any"].sum()),
         "riders_in_bike_lane": int(riders["in_bike_lane_any"].sum()),
@@ -616,7 +663,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "in_roi": int(n_in_roi),
             "stationary_object_dets": int(n_stationary),
             "riders": int(riders.shape[0]),
-            "person_candidates": int(len(person_rows)),
+            "person_candidates": int(n_person),
             "captures_with_exif_ts": int(n_with_ts),
         },
         "params": {
@@ -628,6 +675,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "stationary_radius_px": getattr(args, "stationary_radius", 30.0),
             "stationary_min_hits": getattr(args, "stationary_hits", 6),
             "stationary_min_span_s": getattr(args, "stationary_span_s", 300.0),
+            "stationary_min_density": getattr(args, "stationary_min_density", 0.6),
+            "reuse_detections": bool(reuse),
         },
     }
     (outdir / "scene_summary.json").write_text(json.dumps(summary, indent=2))
@@ -821,6 +870,13 @@ def main():
                     help="min image-number span for a stationary cluster (no-EXIF fallback)")
     ap.add_argument("--stationary-span-s", type=float, default=300.0,
                     help="min EXIF time span (s) for a stationary cluster")
+    ap.add_argument("--stationary-min-density", type=float, default=0.6,
+                    help="min fraction of the window's captures a cluster must "
+                         "appear in; separates parked objects (~1.0) from busy "
+                         "chokepoints many riders pass (~0.1-0.3)")
+    ap.add_argument("--reuse-detections", action="store_true",
+                    help="replay from saved detections_raw.csv instead of "
+                         "re-running YOLO (post-processing changes only)")
     ap.add_argument("--save-crops", action="store_true")
     ap.add_argument("--no-viz", dest="save_viz", action="store_false",
                     help="skip annotated visualization export (on by default)")
