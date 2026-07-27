@@ -68,6 +68,10 @@ class AssocParams:
                                   # frame width (guards against exit/enter merges)
     rescue_min_app_sim: float = 0.30 # appearance correlation required when fingerprints exist
                                      # (no size gate: depth motion legitimately changes bbox area >10x)
+    trust_rescue_direction: bool = False  # queued riders make rescued pairs point backwards
+                                          # (validated at loc_04/04-2: rescue WW 93-94% vs
+                                          # manual ~26-28%); rescue merges count riders but
+                                          # never contribute a displacement direction
     min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
 
@@ -188,7 +192,9 @@ def summarize_riders(
         direction = "unknown"
         cos = None
         wrong_way: Optional[bool] = None
-        if flow is not None and len(g) >= 2 and disp >= params.min_move_px:
+        rescued = bool(g["assoc_rescue"].any()) if "assoc_rescue" in g.columns else False
+        direction_trusted = params.trust_rescue_direction or not rescued
+        if flow is not None and len(g) >= 2 and disp >= params.min_move_px and direction_trusted:
             ux, uy = dx / disp, dy / disp
             cos = ux * float(flow[0]) + uy * float(flow[1])
             if abs(cos) < params.cos_gate:
