@@ -1135,14 +1135,14 @@ def generate_review_html(outdir, loc_id):
 <div id="bar"><b>Review LOCID</b>
  <button onclick="exportCsv()">Export CSV</button> <span id="prog"></span>
  <span style="color:#52514e;font-size:13px">每张图点一个按钮;进度自动保存;全部标完点 Export</span></div>
-<h2>A. riders (""" + str(len(rider_items)) + """ 个) — 是真骑行者吗? 朝哪个方向?</h2>
+<h2>A. riders (""" + str(len(rider_items)) + """ 个) — 相对车流方向: 顺流还是逆流?</h2>
 <div class="grid">""", "\n".join(rider_items) or "<i>无裁剪图 (需 save_crops=True)</i>", """</div>
-<h2>B. person 候选 (""" + str(len(cand_items)) + """ 个) — 是漏检的骑行者吗?</h2>
+<h2>B. person 候选 (""" + str(len(cand_items)) + """ 个) — 是漏检的骑行者吗? 顺流还是逆流?</h2>
 <div class="grid">""", "\n".join(cand_items) or "<i>无</i>", """</div>
 <script>
 var NL = String.fromCharCode(10);
-var OPTS = {rider:["朝左","朝右","朝相机","背离相机","停放","推行","误检","看不清"],
-            candidate:["骑行者:朝左","骑行者:朝右","骑行者:朝相机","骑行者:背离","行人","误检","看不清"]};
+var OPTS = {rider:["顺流","逆流","横穿","不是骑行者","看不清"],
+            candidate:["漏检骑行者:顺流","漏检骑行者:逆流","不是骑行者","看不清"]};
 var KEY = "review_LOCID";
 var store = {};
 try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
