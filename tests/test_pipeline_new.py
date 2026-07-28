@@ -171,6 +171,43 @@ def test_dominant_space():
     check("crosswalk maps to roadway", r3.dominant_space.iloc[0] == "roadway")
 
 
+def test_link_appearance_gate():
+    h_red = [1.0] + [0.0] * 63
+    h_grn = [0.0] * 32 + [1.0] + [0.0] * 31
+    base = dict(score=.9, space_label="bike_lane")
+    # nearby boxes, 1 frame apart, DIFFERENT appearance -> two riders (box swap refused)
+    det = pd.DataFrame([
+        dict(img="a", img_num=1, x1=200, y1=300, x2=310, y2=460, app=h_red, **base),
+        dict(img="b", img_num=2, x1=260, y1=300, x2=370, y2=460, app=h_grn, **base),
+    ])
+    out = rrc.associate_riders(det, rrc.AssocParams())
+    check("link app gate splits dissimilar", out.rider_id.nunique() == 2)
+    # same appearance -> one rider
+    det2 = det.copy(); det2.at[1, "app"] = h_red
+    out2 = rrc.associate_riders(det2, rrc.AssocParams())
+    check("link app gate keeps similar", out2.rider_id.nunique() == 1)
+
+
+def test_direction_span_gate():
+    flow = (1.0, 0.0)
+    base = dict(score=.9, space_label="bike_lane", assoc_rescue=False)
+    # genuine 2s burst pair -> direction kept
+    det = pd.DataFrame([
+        dict(img="a", img_num=1, x1=100, y1=500, x2=160, y2=600, ts=1000.0, **base),
+        dict(img="b", img_num=2, x1=400, y1=500, x2=460, y2=600, ts=1002.0, **base),
+    ]).assign(rider_id=0)
+    r = rrc.summarize_riders(det, flow=flow, params=rrc.AssocParams())
+    check("2s span -> direction kept", r.direction_displacement.iloc[0] == "along_flow")
+    # cross-trigger chain 15s apart -> counted but direction withheld
+    det2 = det.copy(); det2["ts"] = [1000.0, 1015.0]
+    r2 = rrc.summarize_riders(det2, flow=flow, params=rrc.AssocParams())
+    check("15s span -> direction unknown", r2.direction_displacement.iloc[0] == "unknown")
+    # animal jitter 27px (the loc_17 dog) < 40px gate -> unknown
+    det3 = det.copy(); det3.loc[1, ["x1", "x2"]] = [127, 187]
+    r3 = rrc.summarize_riders(det3, flow=flow, params=rrc.AssocParams())
+    check("27px jitter -> unknown (40px gate)", r3.direction_displacement.iloc[0] == "unknown")
+
+
 def test_exclusion_zones():
     import json, tempfile
     det = pd.DataFrame([
@@ -248,6 +285,8 @@ if __name__ == "__main__":
     test_time_gap_gate()
     test_stationary_filter()
     test_dominant_space()
+    test_link_appearance_gate()
+    test_direction_span_gate()
     test_exclusion_zones()
     test_suspect_cluster_report()
     test_pair_diagnostic()

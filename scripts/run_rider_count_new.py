@@ -92,8 +92,21 @@ class AssocParams:
                                           # work) it stays opt-in. >0 enables, tagging
                                           # directions direction_source="pair_rescue" with
                                           # per-scene counters for validation.
-    min_move_px: float = 25.0     # calibrated: stationary-target jitter is <13px, real riders move >50px between captures
+    min_move_px: float = 40.0     # calibrated: stationary-target jitter is <13px, real riders
+                                  # move >50px between captures; 40 sits in the empty band and
+                                  # also rejects animal false positives jittering ~27px
     cos_gate: float = 0.5         # |cos| below this = crossing, not along/against
+    min_link_app_sim: float = 0.30  # appearance similarity required for ANY association link
+                                    # (was rescue-only). In multi-rider scenes the detector often
+                                    # boxes a DIFFERENT rider in the second frame; the fake
+                                    # displacement then points backwards (human-verified false
+                                    # wrong-way at loc_06/17/19). Links whose HS fingerprints
+                                    # disagree are refused; missing fingerprints pass.
+    direction_max_span_s: float = 6.0  # direction is computed only when the chain's EXIF span
+                                       # fits one camera burst (double-shot ~2s). Cross-trigger
+                                       # chains 11-21s apart merged two DIFFERENT riders in every
+                                       # human-verified case; they still count as one rider (no
+                                       # double count) but contribute no direction. 0 disables.
     max_time_gap_s: float = 30.0  # motion-triggered cameras: consecutive image numbers can
                                   # be minutes apart, so a frame-gap check alone merges two
                                   # different people. EXIF capture times farther apart than
@@ -156,8 +169,15 @@ def associate_riders(det_df: pd.DataFrame, params: AssocParams = AssocParams()) 
             for rid, (_, last_bb, _t) in active.items():
                 lc = _bottom_center(last_bb)
                 d = ((c[0] - lc[0]) ** 2 + (c[1] - lc[1]) ** 2) ** 0.5
-                if d <= gate:
-                    cands.append((d, i, rid))
+                if d > gate:
+                    continue
+                # appearance veto: in multi-rider scenes the nearest box in the
+                # next frame is often a different person
+                sim = _app_sim(last_app.get(rid),
+                               rows[i].app if hasattr(rows[i], "app") else None)
+                if sim is not None and sim < getattr(params, "min_link_app_sim", 0.30):
+                    continue
+                cands.append((d, i, rid))
         cands.sort()
         assigned_det: Dict[int, int] = {}
         used_rids = set()
@@ -254,8 +274,13 @@ def summarize_riders(
                    and getattr(params, "trust_rescue_pair_s", 0.0) > 0
                    and dwell <= getattr(params, "trust_rescue_pair_s", 0.0))
         direction_trusted = params.trust_rescue_direction or not rescued or pair_ok
+        # direction only from a single camera burst: cross-trigger chains
+        # (>= ~11s apart) merged two different riders in every verified case
+        max_span = getattr(params, "direction_max_span_s", 6.0)
+        span_ok = (max_span <= 0 or dwell is None or dwell <= max_span)
         direction_source = None
-        if flow is not None and len(g) >= 2 and disp >= params.min_move_px and direction_trusted:
+        if (flow is not None and len(g) >= 2 and disp >= params.min_move_px
+                and direction_trusted and span_ok):
             direction_source = "pair_rescue" if (rescued and pair_ok) else "gated"
             ux, uy = dx / disp, dy / disp
             cos = ux * float(flow[0]) + uy * float(flow[1])
@@ -693,10 +718,12 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         det = det[~stat_mask].copy()
 
     assoc = AssocParams(max_frame_gap=getattr(args, "assoc_gap", 3),
-                        min_move_px=getattr(args, "min_move_px", 25.0),
+                        min_move_px=getattr(args, "min_move_px", 40.0),
                         cos_gate=getattr(args, "cos_gate", 0.5),
                         max_time_gap_s=getattr(args, "max_time_gap_s", 30.0),
-                        trust_rescue_pair_s=getattr(args, "trust_rescue_pair_s", 0.0))
+                        trust_rescue_pair_s=getattr(args, "trust_rescue_pair_s", 0.0),
+                        min_link_app_sim=getattr(args, "min_link_app_sim", 0.30),
+                        direction_max_span_s=getattr(args, "direction_max_span_s", 6.0))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
@@ -814,7 +841,9 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "model": args.model, "conf": args.conf, "imgsz": getattr(args, "imgsz", 640),
             "classes": sorted(args.classes),
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
-            "min_move_px": getattr(args, "min_move_px", 25.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
+            "min_move_px": getattr(args, "min_move_px", 40.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
+            "min_link_app_sim": getattr(args, "min_link_app_sim", 0.30),
+            "direction_max_span_s": getattr(args, "direction_max_span_s", 6.0),
             "max_time_gap_s": getattr(args, "max_time_gap_s", 30.0),
             "trust_rescue_pair_s": getattr(args, "trust_rescue_pair_s", 0.0),
             "stationary_filter": bool(getattr(args, "stationary_filter", True)),
@@ -1003,7 +1032,14 @@ def main():
     ap.add_argument("--iomin-thr", type=float, default=0.60,
                     help="suppress same-frame box contained in a stronger box beyond this ratio")
     ap.add_argument("--assoc-gap", type=int, default=3)
-    ap.add_argument("--min-move-px", type=float, default=25.0)
+    ap.add_argument("--min-move-px", type=float, default=40.0,
+                    help="min displacement for a direction call (jitter <13px, real riders >50px)")
+    ap.add_argument("--min-link-app-sim", type=float, default=0.30,
+                    help="appearance similarity required for any association link "
+                         "(refuses cross-rider box swaps in multi-rider scenes)")
+    ap.add_argument("--direction-max-span-s", type=float, default=6.0,
+                    help="direction only from chains within one camera burst; "
+                         "longer chains keep counting but stay direction-unknown (0 disables)")
     ap.add_argument("--cos-gate", type=float, default=0.5,
                     help="|cos| below this counts as crossing (WW undefined)")
     ap.add_argument("--max-time-gap-s", type=float, default=30.0,
