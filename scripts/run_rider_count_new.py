@@ -1047,7 +1047,7 @@ def main():
         root = Path(args.data_root)
         summaries = []
         for cfg in sorted(cfg_dir.glob("loc_*.json")):
-            if "old" in cfg.stem.lower():
+            if "old" in cfg.stem.lower() or ".exclude" in cfg.stem:
                 continue
             loc = cfg.stem
             img_dir = find_img_dir(root, loc)
