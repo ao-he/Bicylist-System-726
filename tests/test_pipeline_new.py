@@ -222,6 +222,24 @@ def test_direction_span_gate():
     check("27px jitter -> unknown (40px gate)", r3.direction_displacement.iloc[0] == "unknown")
 
 
+def test_second_pass_matcher():
+    import numpy as np
+    white = np.full((100, 60, 3), 240, np.uint8)
+    black = np.full((100, 60, 3), 20, np.uint8)
+    fp_w = rrc._app_hist(white, 0, 0, 60, 100)
+    fp_b = rrc._app_hist(black, 0, 0, 60, 100)
+    rider = {"x1": 100, "y1": 300, "x2": 160, "y2": 420, "app": fp_w}
+    dets = [
+        {"x1": 300, "y1": 300, "x2": 360, "y2": 420, "app": fp_b},   # near but wrong look
+        {"x1": 420, "y1": 300, "x2": 480, "y2": 420, "app": fp_w},   # right look
+        {"x1": 1900, "y1": 300, "x2": 1960, "y2": 420, "app": fp_w}, # right look, too far
+    ]
+    pick = rrc._pick_second_pass_match(rider, dets, frame_width=2000, max_frac=0.3)
+    check("second-pass matcher picks appearance match in range", pick == 1)
+    check("no acceptable candidate -> None",
+          rrc._pick_second_pass_match(rider, [dets[0]], frame_width=2000) is None)
+
+
 def test_exclusion_zones():
     import json, tempfile
     det = pd.DataFrame([
@@ -302,6 +320,7 @@ if __name__ == "__main__":
     test_link_appearance_gate()
     test_achromatic_fingerprint()
     test_direction_span_gate()
+    test_second_pass_matcher()
     test_exclusion_zones()
     test_suspect_cluster_report()
     test_pair_diagnostic()

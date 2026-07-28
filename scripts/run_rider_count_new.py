@@ -284,6 +284,8 @@ def summarize_riders(
         if (flow is not None and len(g) >= 2 and disp >= params.min_move_px
                 and direction_trusted and span_ok):
             direction_source = "pair_rescue" if (rescued and pair_ok) else "gated"
+            if "second_pass" in g.columns and bool(g["second_pass"].fillna(False).any()):
+                direction_source = "second_pass"
             ux, uy = dx / disp, dy / disp
             cos = ux * float(flow[0]) + uy * float(flow[1])
             if abs(cos) < params.cos_gate:
@@ -591,6 +593,140 @@ def report_suspect_clusters(outdir, radius_px=40.0, min_hits=6,
     return df
 
 
+def _pick_second_pass_match(rider_row, frame_dets, frame_width,
+                            min_sim=0.30, max_frac=0.8):
+    """Choose which (if any) re-detected box in the pair frame is the same
+    rider: nearest bottom-center within max_frac of the frame width AND
+    appearance similarity >= min_sim. Returns the index into frame_dets or
+    None. Pure function so the matching rule is unit-testable."""
+    rc = _bottom_center((rider_row["x1"], rider_row["y1"],
+                         rider_row["x2"], rider_row["y2"]))
+    best, best_sim = None, None
+    for i, d in enumerate(frame_dets):
+        c = _bottom_center((d["x1"], d["y1"], d["x2"], d["y2"]))
+        if abs(c[0] - rc[0]) > max_frac * frame_width:
+            continue
+        sim = _app_sim(rider_row.get("app"), d.get("app"))
+        if sim is None or sim < min_sim:
+            continue
+        if best_sim is None or sim > best_sim:
+            best, best_sim = i, sim
+    return best
+
+
+def second_pass_pairs(loc_id, det, img_paths, roi, thr, zones, args):
+    """Guided re-detection for the pair_missed bucket.
+
+    A single-observation rider whose 2-second pair image exists on disk lost
+    its direction only because the detector missed the rider in that frame
+    (blur, partial occlusion). Re-run the detector on JUST those pair frames
+    at a lower confidence, then accept a recovered box only if it (a) lands
+    in the study ROI and outside exclusion zones, (b) is not a duplicate of
+    an existing detection, (c) sits within the burst travel range of the
+    rider, and (d) matches the rider's HSV appearance fingerprint. Every
+    recovered detection is logged to second_pass_dets.csv.
+    Returns (det_with_recoveries, n_recovered).
+    """
+    import cv2
+    counts = det.groupby("rider_id").size()
+    singles = det[det["rider_id"].isin(counts[counts == 1].index)]
+    if not len(singles):
+        return det, 0
+    by_num = {imgnum(p.name): p for p in img_paths}
+    ts_cache: dict = {}
+
+    def ts_of(num):
+        if num not in ts_cache:
+            ts_cache[num] = read_exif_ts(by_num[num]) if num in by_num else None
+        return ts_cache[num]
+
+    pair_window = getattr(args, "direction_max_span_s", 4.0) or 4.0
+    frames_todo: dict = {}   # img_num -> list of (det index, rider row)
+    for idx, r in singles.iterrows():
+        t0 = float(r.ts) if pd.notna(r.ts) else None
+        if t0 is None:
+            continue
+        for n in (int(r.img_num) - 1, int(r.img_num) + 1):
+            t1 = ts_of(n)
+            if t1 is None or abs(t1 - t0) > pair_window:
+                continue
+            frames_todo.setdefault(n, []).append((idx, r))
+    if not frames_todo:
+        return det, 0
+
+    from ultralytics import YOLO
+    model = YOLO(args.model)
+    sp_conf = getattr(args, "second_pass_conf", 0.05)
+    frame_width = float(det["x2"].max())
+    existing_by_img = {img: g for img, g in det.groupby("img")}
+    recovered = []
+    for num, cands in frames_todo.items():
+        p = by_num[num]
+        img, _ = read_image(p)
+        if img is None:
+            continue
+        res = model(img, conf=sp_conf, imgsz=getattr(args, "imgsz", 640), verbose=False)[0]
+        if res.boxes is None:
+            continue
+        new_dets = []
+        old = existing_by_img.get(p.name)
+        for (x1, y1, x2, y2), s, c in zip(res.boxes.xyxy.cpu().numpy(),
+                                          res.boxes.conf.cpu().numpy(),
+                                          res.boxes.cls.cpu().numpy().astype(int)):
+            if c not in args.classes:
+                continue
+            if frame_space_label((x1, y1, x2, y2), roi, thr) not in KEEP_LABELS:
+                continue
+            row = {"x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2)}
+            if zones and bool(apply_exclusion_zones(pd.DataFrame([row]), zones).iloc[0]):
+                continue
+            dup = False
+            if old is not None:
+                for _, o in old.iterrows():
+                    iw = max(0.0, min(x2, o.x2) - max(x1, o.x1))
+                    ih = max(0.0, min(y2, o.y2) - max(y1, o.y1))
+                    inter = iw * ih
+                    union = (x2-x1)*(y2-y1) + (o.x2-o.x1)*(o.y2-o.y1) - inter
+                    if union > 0 and inter / union > 0.5:
+                        dup = True
+                        break
+            if dup:
+                continue
+            row.update({"score": float(s),
+                        "app": _app_hist(img, x1, y1, x2, y2)})
+            new_dets.append(row)
+        if not new_dets:
+            continue
+        used = set()
+        for idx, r in cands:
+            pick = _pick_second_pass_match(
+                {"x1": r.x1, "y1": r.y1, "x2": r.x2, "y2": r.y2, "app": r.app},
+                [d for i, d in enumerate(new_dets) if i not in used],
+                frame_width,
+                min_sim=getattr(args, "min_link_app_sim", 0.30),
+                max_frac=getattr(args, "rescue_max_frac", 0.8))
+            if pick is None:
+                continue
+            real = [i for i in range(len(new_dets)) if i not in used][pick]
+            used.add(real)
+            d = new_dets[real]
+            recovered.append({
+                "img": p.name, "img_num": int(num),
+                "frame_global": -1, "ts": ts_of(num),
+                "x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"],
+                "score": d["score"], "cls": 1, "app": d["app"],
+                "space_label": frame_space_label((d["x1"], d["y1"], d["x2"], d["y2"]), roi, thr),
+                "second_pass": True,
+            })
+    if recovered:
+        rec = pd.DataFrame(recovered)
+        rec.to_csv(Path(getattr(args, "_outdir", ".")) / "second_pass_dets.csv", index=False)
+        det = det.copy()
+        det["second_pass"] = False
+        det = pd.concat([det, rec], ignore_index=True)
+    return det, len(recovered)
+
+
 def read_image(path: Path):
     """cv2 first; fall back to PIL with truncated-JPEG tolerance."""
     import cv2
@@ -768,6 +904,18 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
                         min_link_app_sim=getattr(args, "min_link_app_sim", 0.30),
                         direction_max_span_s=getattr(args, "direction_max_span_s", 4.0))
     det = associate_riders(det, assoc)
+
+    n_sp = 0
+    if getattr(args, "second_pass", True) and flow is not None and len(det):
+        try:
+            args._outdir = outdir
+            det, n_sp = second_pass_pairs(loc_id, det, img_paths, roi, thr, zones, args)
+        except Exception as e:
+            print(f"[{loc_id}] second pass skipped: {e}")
+        if n_sp:
+            print(f"[{loc_id}] second pass: {n_sp} pair detections recovered "
+                  f"(guided re-detection, appearance-verified) -> second_pass_dets.csv")
+            det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
     riders = summarize_riders(det, flow, assoc)
@@ -868,6 +1016,12 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         # against the manual benchmark before relying on pair_rescue directions
         "direction_pair_rescue": int((riders["direction_source"] == "pair_rescue").sum()),
         "ww_pair_rescue": int(((riders["direction_source"] == "pair_rescue")
+                               & (riders["wrong_way_displacement"] == True)).sum()),
+        # guided re-detection: recovered pair detections and the directions
+        # they produced, counted separately so the recovery can be validated
+        "second_pass_dets": int(n_sp),
+        "direction_second_pass": int((riders["direction_source"] == "second_pass").sum()),
+        "ww_second_pass": int(((riders["direction_source"] == "second_pass")
                                & (riders["wrong_way_displacement"] == True)).sum()),
         "note": "wrong_way is provisional (displacement only); single-obs riders await orientation labels",
         "funnel": {
@@ -1084,6 +1238,10 @@ def main():
     ap.add_argument("--min-link-app-sim", type=float, default=0.30,
                     help="appearance similarity required for any association link "
                          "(refuses cross-rider box swaps in multi-rider scenes)")
+    ap.add_argument("--no-second-pass", dest="second_pass", action="store_false",
+                    help="skip guided re-detection of missed pair frames (on by default)")
+    ap.add_argument("--second-pass-conf", type=float, default=0.05,
+                    help="detector confidence for the guided second pass")
     ap.add_argument("--direction-max-span-s", type=float, default=4.0,
                     help="direction only from chains within one camera burst; "
                          "longer chains keep counting but stay direction-unknown (0 disables)")
