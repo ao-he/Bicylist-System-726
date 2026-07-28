@@ -890,11 +890,14 @@ def render_direction_checks(det, riders, cfg, img_lookup, out_dir):
             for th, col in ((6, (0, 0, 0)), (2, (0, 165, 255))):
                 cv2.putText(comp, "FLOW", (tip[0] - 40, tip[1] - 14),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, th, cv2.LINE_AA)
-        # verdict banner
+        # verdict banner. NB: pandas gives numpy bools, and `numpy.True_ is
+        # True` is False — the `is True` check silently tagged every
+        # wrong-way rider as OK_/"with flow". Compare with == instead.
         ww = R.wrong_way_displacement
-        verdict = ("WRONG-WAY" if ww is True else
+        is_ww = bool(ww == True)
+        verdict = ("WRONG-WAY" if is_ww else
                    ("crossing" if R.direction_displacement == "cross_flow" else "with flow"))
-        color = (60, 60, 230) if ww is True else ((230, 160, 40) if verdict == "crossing" else (60, 180, 60))
+        color = (60, 60, 230) if is_ww else ((230, 160, 40) if verdict == "crossing" else (60, 180, 60))
         banner = comp.copy()
         cv2.rectangle(banner, (0, 0), (comp.shape[1], 64), (250, 250, 250), -1)
         comp = cv2.addWeighted(banner, 0.9, comp, 0.1, 0)
@@ -902,7 +905,7 @@ def render_direction_checks(det, riders, cfg, img_lookup, out_dir):
         txt = (f"R{int(R.rider_id)}  {verdict}{cosv}  disp={R.disp_px:.0f}px   "
                f"{first.img} -> {last.img}   pink=movement  orange=reference flow")
         cv2.putText(comp, txt, (16, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.1, color, 3, cv2.LINE_AA)
-        tag = "WW" if ww is True else ("CROSS" if verdict == "crossing" else "OK")
+        tag = "WW" if is_ww else ("CROSS" if verdict == "crossing" else "OK")
         cv2.imwrite(str(out_dir / f"{tag}_R{int(R.rider_id):03d}.jpg"), comp)
         n += 1
     return n
@@ -952,7 +955,7 @@ def render_visualizations(det, riders, cfg, img_lookup, viz_dir, person_det=None
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 165, 255), 3)
             ri = info.loc[int(r.rider_id)]
             label = f"R{int(r.rider_id)} {r.space_label} {ri.direction_displacement}"
-            if ri.wrong_way_displacement is True:
+            if bool(ri.wrong_way_displacement == True):   # numpy bool: never use `is True`
                 label += " WW!"
             for th, col in ((5, (0, 0, 0)), (2, (255, 255, 255))):
                 cv2.putText(img, label, (x1, max(24, y1 - 8)),
