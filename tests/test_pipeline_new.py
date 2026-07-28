@@ -240,6 +240,22 @@ def test_second_pass_matcher():
           rrc._pick_second_pass_match(rider, [dets[0]], frame_width=2000) is None)
 
 
+def test_second_pass_direction():
+    # a recovered pair bound to its rider must yield a trusted direction
+    flow = (1.0, 0.0)
+    det = pd.DataFrame([
+        dict(img="a", img_num=10, x1=100, y1=500, x2=160, y2=600, ts=1000.0,
+             score=.9, space_label="bike_lane", rider_id=7, assoc_rescue=False,
+             second_pass=False),
+        dict(img="b", img_num=11, x1=500, y1=500, x2=560, y2=600, ts=1002.0,
+             score=.3, space_label="bike_lane", rider_id=7, assoc_rescue=False,
+             second_pass=True),
+    ])
+    r = rrc.summarize_riders(det, flow=flow, params=rrc.AssocParams())
+    check("second-pass pair -> direction", r.direction_displacement.iloc[0] == "along_flow")
+    check("second-pass pair tagged", r.direction_source.iloc[0] == "second_pass")
+
+
 def test_exclusion_zones():
     import json, tempfile
     det = pd.DataFrame([
@@ -321,6 +337,7 @@ if __name__ == "__main__":
     test_achromatic_fingerprint()
     test_direction_span_gate()
     test_second_pass_matcher()
+    test_second_pass_direction()
     test_exclusion_zones()
     test_suspect_cluster_report()
     test_pair_diagnostic()

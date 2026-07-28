@@ -716,6 +716,12 @@ def second_pass_pairs(loc_id, det, img_paths, roi, thr, zones, args):
                 "x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"],
                 "score": d["score"], "cls": 1, "app": d["app"],
                 "space_label": frame_space_label((d["x1"], d["y1"], d["x2"], d["y2"]), roi, thr),
+                # bind directly to the rider it was recovered for: the pairing
+                # was already verified by burst-range + appearance, and global
+                # re-association would push fast pairs into the (distrusted)
+                # rescue path, silently discarding the recovered direction
+                "rider_id": int(r.rider_id),
+                "assoc_rescue": False,
                 "second_pass": True,
             })
     if recovered:
@@ -915,7 +921,6 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         if n_sp:
             print(f"[{loc_id}] second pass: {n_sp} pair detections recovered "
                   f"(guided re-detection, appearance-verified) -> second_pass_dets.csv")
-            det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
     riders = summarize_riders(det, flow, assoc)
