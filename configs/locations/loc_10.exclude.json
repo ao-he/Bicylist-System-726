@@ -1,0 +1,10 @@
+{
+  "zones": [
+    {
+      "cx": 1604,
+      "cy": 302,
+      "r": 60,
+      "note": "tree foliage detected as bicycle, right edge; human-verified (56 hits over ~35h at fixed spot, never moved; suspect_clusters.csv row 0)"
+    }
+  ]
+}
