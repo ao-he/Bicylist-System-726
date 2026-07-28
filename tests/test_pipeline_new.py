@@ -171,6 +171,38 @@ def test_dominant_space():
     check("crosswalk maps to roadway", r3.dominant_space.iloc[0] == "roadway")
 
 
+def test_exclusion_zones():
+    import json, tempfile
+    det = pd.DataFrame([
+        dict(img="a", img_num=1, x1=800, y1=250, x2=860, y2=300, score=.2),   # in zone
+        dict(img="b", img_num=2, x1=100, y1=500, x2=160, y2=600, score=.9),   # outside
+    ])
+    zones = [{"cx": 830, "cy": 300, "r": 40, "note": "tree foliage"}]
+    flags = rrc.apply_exclusion_zones(det, zones)
+    check("zone catches foliage box", bool(flags.iloc[0]) and not bool(flags.iloc[1]))
+
+    d = Path(tempfile.mkdtemp())
+    roi_json = d / "loc_99.json"; roi_json.write_text("{}")
+    (d / "loc_99.exclude.json").write_text(json.dumps({"zones": zones}))
+    check("exclude file loaded", len(rrc.load_exclusion_zones(roi_json)) == 1)
+    check("missing exclude file -> empty", rrc.load_exclusion_zones(d / "loc_98.json") == [])
+
+
+def test_suspect_cluster_report():
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    rows = [dict(img=f"s{i}", img_num=n, x1=800, y1=250, x2=860, y2=300,
+                 score=.2, ts=1000.0 + i * 400.0, rider_id=100 + i)
+            for i, n in enumerate([1, 40, 80, 120, 160, 200, 240])]
+    rows += [dict(img=f"m{i}", img_num=2 + i, x1=100 + 250 * i, y1=500,
+                  x2=160 + 250 * i, y2=600, score=.9, ts=1001.0 + 5.0 * i,
+                  rider_id=0) for i in range(3)]
+    pd.DataFrame(rows).to_csv(d / "detections_riders.csv", index=False)
+    sus = rrc.report_suspect_clusters(d)
+    check("suspect report finds flickering spot", len(sus) == 1 and sus.iloc[0].n_riders == 7)
+    check("suspect report saved", (d / "suspect_clusters.csv").exists())
+
+
 def test_pair_diagnostic():
     import tempfile
     d = Path(tempfile.mkdtemp())
@@ -216,6 +248,8 @@ if __name__ == "__main__":
     test_time_gap_gate()
     test_stationary_filter()
     test_dominant_space()
+    test_exclusion_zones()
+    test_suspect_cluster_report()
     test_pair_diagnostic()
     n = sum(PASS)
     print(f"\n{n}/{len(PASS)} tests passed")

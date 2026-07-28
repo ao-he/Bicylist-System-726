@@ -446,6 +446,109 @@ def flag_stationary_detections(det, radius_px=30.0, min_hits=6,
     return flags
 
 
+def load_exclusion_zones(roi_json):
+    """Optional human-adjudicated static-object zones for one location.
+
+    Flickering static false positives (e.g. tree foliage detected as a bicycle
+    at night) fire intermittently at a fixed spot, so they beat the density
+    gate of the stationary filter. There is no safe automatic threshold, so
+    the workflow is: report_suspect_clusters() lists candidate spots -> a
+    human verifies them against the crops/viz -> confirmed spots go into
+    <roi_json_stem>.exclude.json next to the ROI config:
+
+        {"zones": [{"cx": 830, "cy": 300, "r": 40, "note": "tree foliage"}]}
+
+    Detections whose bottom-center falls inside a zone are removed and logged
+    (excluded_zone_dets.csv) — same audit-trail rule as every other removal.
+    """
+    p = Path(roi_json)
+    f = p.with_name(p.stem + ".exclude.json")
+    if not f.exists():
+        return []
+    try:
+        return list(json.loads(f.read_text(encoding="utf-8")).get("zones", []))
+    except Exception as e:
+        print(f"!! bad exclusion file {f}: {e}")
+        return []
+
+
+def apply_exclusion_zones(det, zones):
+    """Boolean Series: detection bottom-center inside any adjudicated zone."""
+    flags = pd.Series(False, index=det.index)
+    if det is None or len(det) == 0 or not zones:
+        return flags
+    for z in zones:
+        cx, cy, r = float(z["cx"]), float(z["cy"]), float(z.get("r", 40.0))
+        bx = (det["x1"] + det["x2"]) / 2.0
+        by = det["y2"]
+        flags |= ((bx - cx) ** 2 + (by - cy) ** 2) <= r * r
+    return flags
+
+
+def report_suspect_clusters(outdir, radius_px=40.0, min_hits=6,
+                            min_span_frames=50, min_span_s=300.0):
+    """List recurring same-spot detection clusters that SURVIVED the automatic
+    stationary filter (they fail its density gate), for human adjudication.
+    A static flickering object (foliage, reflective pole) shows up here; so
+    does a genuine chokepoint — that is exactly why a human must look before
+    anything is excluded. Returns a DataFrame with ready-to-paste zone JSON.
+    """
+    outdir = Path(outdir)
+    det = pd.read_csv(outdir / "detections_riders.csv")
+    if not len(det):
+        return pd.DataFrame()
+    have_ts = "ts" in det.columns
+    clusters = []
+    for idx, r in det.sort_values("img_num").iterrows():
+        cx, cy = (float(r.x1) + float(r.x2)) / 2.0, float(r.y2)
+        best, bd = None, None
+        for c in clusters:
+            d = ((cx - c[0]) ** 2 + (cy - c[1]) ** 2) ** 0.5
+            if d <= radius_px and (bd is None or d < bd):
+                best, bd = c, d
+        if best is None:
+            clusters.append([cx, cy, 1, {int(r.img_num)}, [], set()])
+            best = clusters[-1]
+        else:
+            best[0] = (best[0] * best[2] + cx) / (best[2] + 1)
+            best[1] = (best[1] * best[2] + cy) / (best[2] + 1)
+            best[2] += 1
+            best[3].add(int(r.img_num))
+        if have_ts and pd.notna(r.ts):
+            best[4].append(float(r.ts))
+        if "rider_id" in det.columns:
+            best[5].add(int(r.rider_id))
+    all_frames = np.array(sorted(pd.unique(det["img_num"])))
+    rows = []
+    for c in clusters:
+        if len(c[3]) < min_hits:
+            continue
+        if len(c[4]) >= 2:
+            span_ok = (max(c[4]) - min(c[4])) >= min_span_s
+            span = round(max(c[4]) - min(c[4]))
+        else:
+            span_ok = (max(c[3]) - min(c[3])) >= min_span_frames
+            span = max(c[3]) - min(c[3])
+        if not span_ok:
+            continue
+        lo, hi = min(c[3]), max(c[3])
+        n_window = int(((all_frames >= lo) & (all_frames <= hi)).sum())
+        rows.append({
+            "cx": round(c[0]), "cy": round(c[1]),
+            "hits": len(c[3]), "span": span,
+            "density": round(len(c[3]) / max(n_window, 1), 2),
+            "rider_ids": ",".join(f"R{i}" for i in sorted(c[5])),
+            "n_riders": len(c[5]),
+            "zone_json": json.dumps({"cx": round(c[0]), "cy": round(c[1]),
+                                     "r": int(radius_px), "note": "VERIFY-ME"}),
+        })
+    df = pd.DataFrame(rows)
+    if len(df):
+        df = df.sort_values("n_riders", ascending=False).reset_index(drop=True)
+        df.to_csv(outdir / "suspect_clusters.csv", index=False)
+    return df
+
+
 def read_image(path: Path):
     """cv2 first; fall back to PIL with truncated-JPEG tolerance."""
     import cv2
@@ -560,6 +663,18 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         lambda r: frame_space_label((r.x1, r.y1, r.x2, r.y2), roi, thr), axis=1)
     det = det[det["space_label"].isin(KEEP_LABELS)].copy()
     n_in_roi = len(det)
+
+    zones = load_exclusion_zones(roi_json)
+    n_zone = 0
+    if zones and len(det):
+        zmask = apply_exclusion_zones(det, zones)
+        n_zone = int(zmask.sum())
+        if n_zone:
+            det[zmask].to_csv(outdir / "excluded_zone_dets.csv", index=False)
+            print(f"[{loc_id}] exclusion zones: {n_zone} detections inside "
+                  f"{len(zones)} human-verified static-object zones removed "
+                  f"-> excluded_zone_dets.csv")
+        det = det[~zmask].copy()
 
     n_stationary = 0
     if getattr(args, "stationary_filter", True) and len(det):
@@ -689,6 +804,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "after_nms": int(n_after_nms),
             "after_containment_dedup": int(n_after_dedup),
             "in_roi": int(n_in_roi),
+            "zone_excluded_dets": int(n_zone),
             "stationary_object_dets": int(n_stationary),
             "riders": int(riders.shape[0]),
             "person_candidates": int(n_person),
@@ -1073,6 +1189,8 @@ def qc_funnel_table(summary):
         ("After NMS",                   f["after_nms"],               f"same-frame IoU >= {summary['params']['nms_iou']} removed"),
         ("After containment dedup",     f["after_containment_dedup"], "nested duplicate boxes removed"),
         ("Inside study ROI",            f["in_roi"],                  "bottom-edge vote in annotated facilities"),
+        ("  static-object zones removed", -f.get("zone_excluded_dets", 0),
+         "human-verified flickering false positives (excluded_zone_dets.csv)"),
         ("  stationary objects removed", -f.get("stationary_object_dets", 0),
          "parked bikes: same spot repeatedly over a long span (stationary_objects.csv)"),
         ("Riders (counting unit)",      f["riders"],                  "nearby-capture association (frame gap + EXIF time gate)"),
