@@ -188,6 +188,20 @@ def test_link_appearance_gate():
     check("link app gate keeps similar", out2.rider_id.nunique() == 1)
 
 
+def test_achromatic_fingerprint():
+    # white shirt vs black jacket: identical in HS alone, must differ with V
+    import numpy as np
+    white = np.full((100, 60, 3), 240, np.uint8)
+    black = np.full((100, 60, 3), 20, np.uint8)
+    fw = rrc._app_hist(white, 0, 0, 60, 100)
+    fb = rrc._app_hist(black, 0, 0, 60, 100)
+    sim = rrc._app_sim(fw, fb)
+    check("white vs black fingerprints differ", sim is not None and sim < 0.30)
+    check("same crop fingerprints match", rrc._app_sim(fw, fw) > 0.99)
+    # old 64-dim cached fingerprint vs new format -> None (treated as missing)
+    check("format mismatch -> None", rrc._app_sim(fw, [0.1] * 64) is None)
+
+
 def test_direction_span_gate():
     flow = (1.0, 0.0)
     base = dict(score=.9, space_label="bike_lane", assoc_rescue=False)
@@ -286,6 +300,7 @@ if __name__ == "__main__":
     test_stationary_filter()
     test_dominant_space()
     test_link_appearance_gate()
+    test_achromatic_fingerprint()
     test_direction_span_gate()
     test_exclusion_zones()
     test_suspect_cluster_report()

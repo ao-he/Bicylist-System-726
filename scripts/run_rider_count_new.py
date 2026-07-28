@@ -102,11 +102,13 @@ class AssocParams:
                                     # displacement then points backwards (human-verified false
                                     # wrong-way at loc_06/17/19). Links whose HS fingerprints
                                     # disagree are refused; missing fingerprints pass.
-    direction_max_span_s: float = 6.0  # direction is computed only when the chain's EXIF span
-                                       # fits one camera burst (double-shot ~2s). Cross-trigger
-                                       # chains 11-21s apart merged two DIFFERENT riders in every
-                                       # human-verified case; they still count as one rider (no
-                                       # double count) but contribute no direction. 0 disables.
+    direction_max_span_s: float = 4.0  # direction is computed only when the chain's EXIF span
+                                       # fits one camera burst (double-shot ~2s; 4s = 2x margin,
+                                       # same window as the pair diagnostic). Cross-trigger
+                                       # chains merged two DIFFERENT riders in every human-
+                                       # verified case (observed as close as 6s apart), so they
+                                       # still count as one rider but contribute no direction.
+                                       # 0 disables.
     max_time_gap_s: float = 30.0  # motion-triggered cameras: consecutive image numbers can
                                   # be minutes apart, so a frame-gap check alone merges two
                                   # different people. EXIF capture times farther apart than
@@ -276,7 +278,7 @@ def summarize_riders(
         direction_trusted = params.trust_rescue_direction or not rescued or pair_ok
         # direction only from a single camera burst: cross-trigger chains
         # (>= ~11s apart) merged two different riders in every verified case
-        max_span = getattr(params, "direction_max_span_s", 6.0)
+        max_span = getattr(params, "direction_max_span_s", 4.0)
         span_ok = (max_span <= 0 or dwell is None or dwell <= max_span)
         direction_source = None
         if (flow is not None and len(g) >= 2 and disp >= params.min_move_px
@@ -360,7 +362,10 @@ def collect_images(img_dir: Path, max_images=None):
 
 
 def _app_hist(img, x1, y1, x2, y2):
-    """Compact HS color histogram of a crop — appearance fingerprint."""
+    """Compact HSV fingerprint of a crop: 8x8 hue-saturation histogram plus a
+    16-bin value (brightness) histogram. The V part matters: achromatic
+    clothing (white shirt vs black jacket) is nearly identical in HS alone,
+    which let cross-rider box swaps slip through the appearance gate."""
     import cv2
     h, w = img.shape[:2]
     x1, y1 = max(0, int(x1)), max(0, int(y1))
@@ -368,20 +373,32 @@ def _app_hist(img, x1, y1, x2, y2):
     if x2 - x1 < 4 or y2 - y1 < 4:
         return None
     crop = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([crop], [0, 1], None, [8, 8], [0, 180, 0, 256])
-    cv2.normalize(hist, hist)
-    return hist.flatten().tolist()
+    hs = cv2.calcHist([crop], [0, 1], None, [8, 8], [0, 180, 0, 256])
+    cv2.normalize(hs, hs)
+    v = cv2.calcHist([crop], [2], None, [16], [0, 256])
+    cv2.normalize(v, v)
+    return hs.flatten().tolist() + v.flatten().tolist()
 
 
 def _app_sim(a, b):
-    """Correlation of two fingerprints; None when either is missing."""
+    """Correlation of two fingerprints; None when either is missing or the
+    formats differ (old HS-only cache vs current HSV)."""
     import numpy as np
     if a is None or b is None or isinstance(a, float) or isinstance(b, float):
         return None
     try:
         import cv2
-        return float(cv2.compareHist(np.array(a, np.float32), np.array(b, np.float32),
-                                     cv2.HISTCMP_CORREL))
+        aa = np.array(a, np.float32)
+        bb = np.array(b, np.float32)
+        if aa.shape != bb.shape:
+            return None
+        if len(aa) == 80:   # HSV format: 64 HS + 16 V, judged separately.
+            # min() of the two correlations: a shared HS spike must not mask a
+            # brightness mismatch (white shirt vs black jacket), and vice versa
+            hs = float(cv2.compareHist(aa[:64], bb[:64], cv2.HISTCMP_CORREL))
+            v = float(cv2.compareHist(aa[64:], bb[64:], cv2.HISTCMP_CORREL))
+            return min(hs, v)
+        return float(cv2.compareHist(aa, bb, cv2.HISTCMP_CORREL))
     except Exception:
         return None
 
@@ -633,6 +650,20 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         if len(det) < n_before:
             print(f"[{loc_id}] {n_before - len(det)} cached detections dropped "
                   f"(their images were deleted from the folder)")
+        # refresh fingerprints with the current algorithm: cached ones may be
+        # the old HS-only format, which is blind to white-vs-black clothing
+        if len(det):
+            by_img_fp = {p.name: p for p in img_paths}
+            new_apps = {}
+            for img_name, gg in det.groupby("img"):
+                src = by_img_fp.get(img_name)
+                img_arr, _ = (read_image(src) if src else (None, None))
+                if img_arr is None:
+                    continue
+                for idx, rr in gg.iterrows():
+                    new_apps[idx] = _app_hist(img_arr, rr.x1, rr.y1, rr.x2, rr.y2)
+            det["app"] = [new_apps.get(i) for i in det.index]
+            print(f"[{loc_id}] appearance fingerprints refreshed (HSV) for {len(new_apps)} detections")
         try:
             integrity = pd.read_csv(outdir / "integrity_report.csv").to_dict("records")
         except Exception:
@@ -735,7 +766,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
                         max_time_gap_s=getattr(args, "max_time_gap_s", 30.0),
                         trust_rescue_pair_s=getattr(args, "trust_rescue_pair_s", 0.0),
                         min_link_app_sim=getattr(args, "min_link_app_sim", 0.30),
-                        direction_max_span_s=getattr(args, "direction_max_span_s", 6.0))
+                        direction_max_span_s=getattr(args, "direction_max_span_s", 4.0))
     det = associate_riders(det, assoc)
     det.to_csv(outdir / "detections_riders.csv", index=False)
 
@@ -859,7 +890,7 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             "nms_iou": getattr(args, "nms_iou", 0.70), "assoc_max_frame_gap": getattr(args, "assoc_gap", 3),
             "min_move_px": getattr(args, "min_move_px", 40.0), "cos_gate": getattr(args, "cos_gate", 0.5), "roi_exclusive": True,
             "min_link_app_sim": getattr(args, "min_link_app_sim", 0.30),
-            "direction_max_span_s": getattr(args, "direction_max_span_s", 6.0),
+            "direction_max_span_s": getattr(args, "direction_max_span_s", 4.0),
             "max_time_gap_s": getattr(args, "max_time_gap_s", 30.0),
             "trust_rescue_pair_s": getattr(args, "trust_rescue_pair_s", 0.0),
             "stationary_filter": bool(getattr(args, "stationary_filter", True)),
@@ -1053,7 +1084,7 @@ def main():
     ap.add_argument("--min-link-app-sim", type=float, default=0.30,
                     help="appearance similarity required for any association link "
                          "(refuses cross-rider box swaps in multi-rider scenes)")
-    ap.add_argument("--direction-max-span-s", type=float, default=6.0,
+    ap.add_argument("--direction-max-span-s", type=float, default=4.0,
                     help="direction only from chains within one camera burst; "
                          "longer chains keep counting but stay direction-unknown (0 disables)")
     ap.add_argument("--cos-gate", type=float, default=0.5,
