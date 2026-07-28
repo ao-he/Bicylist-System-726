@@ -2001,7 +2001,7 @@ def facility_comparison_table(df, manual_df):
 def pair_diagnostic(outdir, img_dir, loc_id="", pair_window_s=4.0):
     """Why is a rider's direction unknown? Decompose the coverage gap.
 
-    The cameras shoot two images ~2 s apart per trigger (per Deborah), so in
+    The cameras shoot two images ~2 s apart per trigger, so in
     principle almost every event should have a displacement pair. This audit
     classifies every direction-unknown rider into:
       no_pair_on_disk      no second capture within pair_window_s exists at all

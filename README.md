@@ -1,10 +1,10 @@
-# Bicyclist Facility-Use and Wrong-Way Riding Pipeline (v16)
+# Bicyclist Facility-Use and Wrong-Way Riding Pipeline (v2)
 
 Automated pipeline that measures **where cyclists ride** (bike lane / sidewalk / travel lane) and **which direction they travel** (with or against the reference flow) from motion-triggered still cameras, validated event-by-event against a complete manual count.
 
 Data: 19 camera deployments at 17 locations in Tempe, AZ (Jan–Apr 2023). Each camera fires two still images about 2 seconds apart when motion is detected — there is no continuous video, which is what most of the design below is about.
 
-## Headline validation (v16)
+## Headline validation (v2)
 
 | Metric | Value |
 |---|---|
@@ -74,7 +74,7 @@ Re-running after a post-processing change does not need the YOLO pass: `--reuse-
 - `capture_index.csv` — cached EXIF times for the pair diagnostic
 - `direction_check/`, `viz/`, `crops/`, `report/` — verification images and HTML report
 
-## Final parameter set (v16)
+## Final parameter set (v2)
 
 ```
 model=yolov8s.pt, imgsz=1280, conf=0.10, classes={1}
@@ -86,4 +86,4 @@ stationary:  radius=30.0, hits=6, span_s=300.0, span_frames=50, min_density=0.60
 second pass: second_pass=True, second_pass_conf=0.05
 ```
 
-Every threshold is justified by camera hardware or a calibrated measurement band, never tuned against the manual counts; the manual counts are used only for post-hoc validation. The full version history (v5 → v16), including the one rolled-back experiment and why, is in [`CHANGELOG_new_pipeline.md`](CHANGELOG_new_pipeline.md).
+Every threshold is justified by camera hardware or a calibrated measurement band, never tuned against the manual counts; the manual counts are used only for post-hoc validation. The full list of changes from the original pipeline (v1) to v2, including the one rolled-back experiment and why, is in [`CHANGELOG_new_pipeline.md`](CHANGELOG_new_pipeline.md).
