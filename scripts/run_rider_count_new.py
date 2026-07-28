@@ -615,12 +615,24 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         # detector output is unchanged — only post-processing differs, so skip
         # the (hours-long) YOLO pass and replay from the saved raw detections
         import ast
-        det = pd.read_csv(raw_csv)
-        if "app" in det.columns:
+        try:
+            det = pd.read_csv(raw_csv)
+        except Exception:
+            det = pd.DataFrame(columns=["img", "img_num", "frame_global", "ts",
+                                        "x1", "y1", "x2", "y2", "score", "cls", "app"])
+        if "app" in det.columns and len(det):
             det["app"] = det["app"].apply(
                 lambda v: ast.literal_eval(v) if isinstance(v, str) else None)
         if "ts" not in det.columns:
             det["ts"] = None
+        # the archive defines the dataset: cached detections whose image was
+        # deleted from disk are dropped (and crops/viz can't reference them)
+        existing = {p.name for p in img_paths}
+        n_before = len(det)
+        det = det[det["img"].isin(existing)].copy()
+        if len(det) < n_before:
+            print(f"[{loc_id}] {n_before - len(det)} cached detections dropped "
+                  f"(their images were deleted from the folder)")
         try:
             integrity = pd.read_csv(outdir / "integrity_report.csv").to_dict("records")
         except Exception:
@@ -736,6 +748,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             person_df = pd.read_csv(pc_csv) if pc_csv.exists() else pd.DataFrame()
         except Exception:
             person_df = pd.DataFrame()
+        if len(person_df) and "img" in person_df.columns:
+            person_df = person_df[person_df["img"].isin({p.name for p in img_paths})].copy()
         n_person = len(person_df)
     else:
         person_df = pd.DataFrame(person_rows)
@@ -757,7 +771,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
             pc_dir.mkdir(exist_ok=True)
             by_img = {p.name: p for p in img_paths}
             for _, r in person_df[~person_df["frame_has_bicycle"]].iterrows():
-                img, _ = read_image(by_img[r.img])
+                src = by_img.get(r.img)
+                img, _ = (read_image(src) if src else (None, None))
                 if img is None:
                     continue
                 h, w = img.shape[:2]
@@ -785,7 +800,8 @@ def run_location(loc_id, img_dir, roi_json, outdir, args):
         crop_dir.mkdir(exist_ok=True)
         by_img = {p.name: p for p in img_paths}
         for _, r in det.iterrows():
-            img, _ = read_image(by_img[r.img])
+            src = by_img.get(r.img)
+            img, _ = (read_image(src) if src else (None, None))
             if img is None:
                 continue
             h, w = img.shape[:2]
