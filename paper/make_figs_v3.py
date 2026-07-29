@@ -105,44 +105,42 @@ def fig_validation(rows, out):
     ax1.set_ylabel("Pipeline count (events)", fontsize=8.5)
     ax1.set_title("(a) Event counts per deployment", fontsize=9, loc="left")
 
-    # (b) funnel plot: pipeline-minus-manual difference vs subset size,
-    # with binomial 95% sampling bounds at the pooled manual rate.
-    pbar = 426 / 1951
-    ns = np.linspace(6.5, 135, 300)
-    bound = 1.96 * np.sqrt(pbar * (1 - pbar) / ns) * 100
-    ax2.fill_between(ns, -bound, bound, color=BLUE, alpha=0.10, zorder=1)
-    ax2.plot(ns, bound, color=BLUE, lw=0.9, alpha=0.5, zorder=2)
-    ax2.plot(ns, -bound, color=BLUE, lw=0.9, alpha=0.5, zorder=2)
-    ax2.axhline(0, color="#8a8884", lw=1.0, ls=(0, (4, 3)), zorder=2)
+    # (b) paired bars: manual vs pipeline wrong-way rate per deployment,
+    # sorted by manual rate, with the pooled pair at the right.
+    sub = []
     for r in rows:
         a, n = PIPE_WW[r["loc"]]
-        if n < 8:
-            continue
-        diff = 100 * (a / n - r["ww_total"] / r["total"])
-        ax2.scatter([n], [diff], s=30, facecolor=BLUE, alpha=0.85,
-                    edgecolor="#1b4e8f", linewidth=0.8, zorder=3)
-        if r["loc"] in ("16", "17", "08"):
-            ax2.annotate(f"Loc {r['loc']}", (n, diff),
-                         textcoords="offset points", xytext=(5, 3),
-                         fontsize=6.8, color=INK)
-    ax2.annotate("pooled difference $-$3.5 pp", (115, -3.5),
-                 textcoords="offset points", xytext=(-2, -14), fontsize=6.8,
-                 ha="right", color=INK)
-    ax2.scatter([115], [-3.5], marker="s", s=42, facecolor=GREEN,
-                edgecolor="#0e7a54", linewidth=0.9, zorder=4)
-    ax2.set_xscale("log")
-    xt = [8, 10, 15, 20, 30, 50, 80, 115]
-    ax2.set_xticks(xt, [str(t) for t in xt])
-    ax2.minorticks_off()
-    ax2.set_xlim(6.5, 135)
-    ax2.set_ylim(-45, 45)
-    ax2.text(0.03, 0.955, "shaded: 95% sampling band at the pooled rate",
-             transform=ax2.transAxes, fontsize=6.8, color=MUTED, va="top")
-    ax2.set_xlabel("Direction calls in pipeline subset ($n$, log scale)",
+        if n >= 8:
+            sub.append((r["loc"], 100 * r["ww_total"] / r["total"],
+                        100 * a / n, wilson_ci(a, n), n))
+    sub.sort(key=lambda t: t[1])
+    xs_b = np.arange(len(sub))
+    w = 0.38
+    ax2.bar(xs_b - w / 2 - 0.01, [t[1] for t in sub], width=w, color=BLUE,
+            label="Manual (all events)", zorder=3)
+    ax2.bar(xs_b + w / 2 + 0.01, [t[2] for t in sub], width=w, color=GREEN,
+            label="Pipeline (direction-known)", zorder=3)
+    for x, t in zip(xs_b, sub):
+        lo, hi = t[3]
+        ax2.plot([x + w / 2 + 0.01] * 2, [lo * 100, hi * 100],
+                 color="#4a4944", lw=1.1, zorder=4)
+    xp = len(sub) + 0.8
+    ax2.axvline(len(sub) - 0.15 + 0.5, color="#c9c8c4", lw=0.8, zorder=2)
+    ax2.bar(xp - w / 2 - 0.01, [21.8], width=w, color=BLUE, zorder=3)
+    ax2.bar(xp + w / 2 + 0.01, [18.3], width=w, color=GREEN, zorder=3)
+    ax2.text(xp - w / 2 - 0.01, 22.8, "21.8", ha="center", fontsize=6.8,
+             color=INK)
+    ax2.text(xp + w / 2 + 0.01, 19.3, "18.3", ha="center", fontsize=6.8,
+             color=INK)
+    ticklabels = [f"{t[0]}\n{t[4]}" for t in sub] + ["Pooled\n268"]
+    ax2.set_xticks(list(xs_b) + [xp], ticklabels, fontsize=6.2)
+    ax2.set_ylim(0, 92)
+    ax2.set_ylabel("Wrong-way share of events (%)", fontsize=8.5)
+    ax2.set_xlabel("Deployment (top) and pipeline direction calls $n$ (bottom)",
                    fontsize=8.5)
-    ax2.set_ylabel("Pipeline minus manual\nwrong-way rate (pp)", fontsize=8.5)
-    ax2.set_title("(b) Wrong-way rate difference per deployment",
-                  fontsize=9, loc="left")
+    ax2.legend(fontsize=7.0, frameon=False, loc="upper left")
+    ax2.set_title("(b) Wrong-way rate: manual vs. pipeline", fontsize=9,
+                  loc="left")
 
     for ax in (ax1, ax2):
         ax.tick_params(labelsize=7.5)
