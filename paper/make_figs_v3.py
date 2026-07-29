@@ -141,7 +141,7 @@ def fig_validation(rows, out):
     ax2.legend(fontsize=6.8, frameon=False, loc="lower right")
     ax2.text(0.985, 0.30, "whiskers: Wilson 95% CI",
              transform=ax2.transAxes, fontsize=6.4, color=MUTED, ha="right")
-    ax2.set_title("(b) Wrong-way rate by deployment and pooled",
+    ax2.set_title("(b) Manual wrong-way rate by deployment;\npooled comparison with the pipeline",
                   fontsize=9, loc="left")
 
     for ax in (ax1, ax2):
