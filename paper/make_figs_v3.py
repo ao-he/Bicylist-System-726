@@ -75,67 +75,54 @@ def fig_validation(rows, out):
     locs = [r["loc"] for r in rows]
     manual = [r["total"] for r in rows]
     pipe = [PIPE[l] for l in locs]
+    ww_rate = [r["ww_total"] / r["total"] for r in rows]
+    ci = [wilson_ci(r["ww_total"], r["total"]) for r in rows]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.7, 3.35), dpi=300,
-                                   gridspec_kw={"wspace": 0.30})
+    y = np.arange(len(locs))[::-1]
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(9.0, 5.6), dpi=300, sharey=False,
+        gridspec_kw={"width_ratios": [1.35, 1.0], "wspace": 0.14})
 
-    # (a) counts agreement: pipeline vs manual, identity line, log-log
-    lim = (1.5, 700)
-    ax1.plot(lim, lim, ls=(0, (4, 3)), color="#8a8884", lw=1.0, zorder=1)
-    ax1.scatter(manual, pipe, s=30, facecolor=BLUE, alpha=0.8,
-                edgecolor="#1b4e8f", linewidth=0.8, zorder=3)
-    ax1.set_xscale("log"); ax1.set_yscale("log")
-    ax1.set_xlim(lim); ax1.set_ylim(lim)
-    ticks = [2, 5, 10, 20, 50, 100, 200, 500]
-    ax1.set_xticks(ticks, [str(t) for t in ticks])
-    ax1.set_yticks(ticks, [str(t) for t in ticks])
-    ax1.minorticks_off()
-    for l, m, p in zip(locs, manual, pipe):
-        if l in ("17", "21", "02", "06"):
-            ax1.annotate(f"Loc {l}", (m, p), textcoords="offset points",
-                         xytext=(5, -9 if l in ("06",) else 5), fontsize=6.8,
-                         color=INK)
-    ax1.text(0.05, 0.93, "$r$ = 0.99", transform=ax1.transAxes, fontsize=9)
-    ax1.text(0.97, 0.03, "below line: pipeline undercounts",
-             transform=ax1.transAxes, fontsize=6.8, ha="right", color=MUTED)
-    ax1.set_xlabel("Manual count (events)", fontsize=8.5)
-    ax1.set_ylabel("Pipeline count (events)", fontsize=8.5)
-    ax1.set_title("(a) Event counts per deployment", fontsize=9, loc="left")
+    h = 0.38
+    ax1.barh(y + h / 2 + 0.01, manual, height=h, color=BLUE, label="Manual")
+    ax1.barh(y - h / 2 - 0.01, pipe, height=h, color=GREEN, label="Pipeline")
+    for yi, m, p in zip(y, manual, pipe):
+        ax1.text(m + 5, yi + h / 2 + 0.01, f"{int(m)}", va="center",
+                 fontsize=6.2, color=INK)
+        ax1.text(p + 5, yi - h / 2 - 0.01, f"{int(p)}", va="center",
+                 fontsize=6.2, color=MUTED)
+    ax1.set_yticks(y, [f"Loc {l}" for l in locs], fontsize=7.5)
+    ax1.set_xlabel("Cyclist events", fontsize=8.5)
+    ax1.set_title("(a) Event counts: manual vs. pipeline", fontsize=9, loc="left")
+    ax1.legend(fontsize=7.5, frameon=False, loc="lower right")
+    ax1.set_xlim(0, max(manual) * 1.14)
 
-    # (b) wrong-way agreement: pipeline (dir-known, n>=8) vs manual
-    ax2.plot([0, 100], [0, 100], ls=(0, (4, 3)), color="#8a8884", lw=1.0,
-             zorder=1)
-    for r in rows:
-        a, n = PIPE_WW[r["loc"]]
-        if n < 8:
-            continue
-        mx = 100 * r["ww_total"] / r["total"]
-        py = 100 * a / n
-        lo, hi = wilson_ci(a, n)
-        ax2.plot([mx, mx], [lo * 100, hi * 100], color=BLUE, lw=1.1,
-                 alpha=0.45, zorder=2)
-        ax2.scatter([mx], [py], s=30, facecolor=BLUE, alpha=0.85,
-                    edgecolor="#1b4e8f", linewidth=0.8, zorder=3)
-        if r["loc"] in ("08", "17"):
-            ax2.annotate(f"Loc {r['loc']}", (mx, py),
-                         textcoords="offset points", xytext=(5, 3),
-                         fontsize=6.8, color=INK)
-    ax2.scatter([21.8], [18.3], marker="s", s=42, facecolor=GREEN,
-                edgecolor="#0e7a54", linewidth=0.9, zorder=4)
-    ax2.annotate("pooled\n21.8 vs 18.3", (21.8, 18.3),
-                 textcoords="offset points", xytext=(7, -16), fontsize=6.8,
-                 color=INK)
-    ax2.set_xlim(0, 75); ax2.set_ylim(0, 75)
-    ax2.set_xlabel("Manual wrong-way rate, all events (%)", fontsize=8.5)
-    ax2.set_ylabel("Pipeline wrong-way rate,\ndirection-known (%)", fontsize=8.5)
-    ax2.set_title("(b) Wrong-way rate per deployment", fontsize=9, loc="left")
+    for yi, r, (lo, hi) in zip(y, ww_rate, ci):
+        ax2.plot([lo * 100, hi * 100], [yi, yi], color=MUTED, lw=1.4, zorder=2)
+    ax2.scatter([r * 100 for r in ww_rate], y, marker="D", s=26, color=BLUE,
+                zorder=3)
+    for yi, r in zip(y, ww_rate):
+        ax2.text(r * 100, yi + 0.32, f"{r * 100:.0f}", ha="center",
+                 fontsize=6.2, color=INK)
+    py, pr = [], []
+    for yi, l in zip(y, locs):
+        a, n = PIPE_WW[l]
+        if n >= 8:
+            lo, hi = wilson_ci(a, n)
+            ax2.plot([lo * 100, hi * 100], [yi - 0.30, yi - 0.30],
+                     color=GREEN, lw=1.1, alpha=0.55, zorder=2)
+            py.append(yi - 0.30); pr.append(a / n * 100)
+    ax2.scatter(pr, py, marker="o", s=18, color=GREEN, zorder=3)
+    ax2.set_yticks(y, ["" for _ in locs])
+    ax2.set_xlabel("Wrong-way share of events (%)", fontsize=8.5)
+    ax2.set_title("(b) Wrong-way rate (Wilson 95% CI)", fontsize=9, loc="left")
+    ax2.set_xlim(-2, 100)
 
     for ax in (ax1, ax2):
         ax.tick_params(labelsize=7.5)
         ax.spines[["top", "right"]].set_visible(False)
+        ax.grid(axis="x", color="#e6e5e1", lw=0.7, zorder=0)
         ax.set_axisbelow(True)
-        ax.grid(color="#e6e5e1", lw=0.6)
-        ax.set_aspect("equal")
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
