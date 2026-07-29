@@ -105,42 +105,43 @@ def fig_validation(rows, out):
     ax1.set_ylabel("Pipeline count (events)", fontsize=8.5)
     ax1.set_title("(a) Event counts per deployment", fontsize=9, loc="left")
 
-    # (b) paired bars: manual vs pipeline wrong-way rate per deployment,
-    # sorted by manual rate, with the pooled pair at the right.
-    sub = []
-    for r in rows:
-        a, n = PIPE_WW[r["loc"]]
-        if n >= 8:
-            sub.append((r["loc"], 100 * r["ww_total"] / r["total"],
-                        100 * a / n, wilson_ci(a, n), n))
-    sub.sort(key=lambda t: t[1])
-    xs_b = np.arange(len(sub))
-    w = 0.38
-    ax2.bar(xs_b - w / 2 - 0.01, [t[1] for t in sub], width=w, color=BLUE,
-            label="Manual (all events)", zorder=3)
-    ax2.bar(xs_b + w / 2 + 0.01, [t[2] for t in sub], width=w, color=GREEN,
-            label="Pipeline (direction-known)", zorder=3)
-    for x, t in zip(xs_b, sub):
-        lo, hi = t[3]
-        ax2.plot([x + w / 2 + 0.01] * 2, [lo * 100, hi * 100],
-                 color="#4a4944", lw=1.1, zorder=4)
-    xp = len(sub) + 0.8
-    ax2.axvline(len(sub) - 0.15 + 0.5, color="#c9c8c4", lw=0.8, zorder=2)
-    ax2.bar(xp - w / 2 - 0.01, [21.8], width=w, color=BLUE, zorder=3)
-    ax2.bar(xp + w / 2 + 0.01, [18.3], width=w, color=GREEN, zorder=3)
-    ax2.text(xp - w / 2 - 0.01, 22.8, "21.8", ha="center", fontsize=6.8,
-             color=INK)
-    ax2.text(xp + w / 2 + 0.01, 19.3, "18.3", ha="center", fontsize=6.8,
-             color=INK)
-    ticklabels = [f"{t[0]}\n{t[4]}" for t in sub] + ["Pooled\n268"]
-    ax2.set_xticks(list(xs_b) + [xp], ticklabels, fontsize=6.2)
-    ax2.set_ylim(0, 92)
-    ax2.set_ylabel("Wrong-way share of events (%)", fontsize=8.5)
-    ax2.set_xlabel("Deployment (top) and pipeline direction calls $n$ (bottom)",
-                   fontsize=8.5)
-    ax2.legend(fontsize=7.0, frameon=False, loc="upper left")
-    ax2.set_title("(b) Wrong-way rate: manual vs. pipeline", fontsize=9,
-                  loc="left")
+    # (b) pooled wrong-way rate: manual vs pipeline, with Wilson CIs.
+    # The paper's direction-validation claim is pooled, and the figure
+    # shows exactly that claim.
+    m_lo, m_hi = wilson_ci(426, 1951)
+    p_lo, p_hi = wilson_ci(49, 268)
+    xb = [0, 0.8]
+    vals = [21.8, 18.3]
+    ax2.bar(xb[0], vals[0], width=0.5, color=BLUE, zorder=3)
+    ax2.bar(xb[1], vals[1], width=0.5, color=GREEN, zorder=3)
+    ax2.plot([xb[0]] * 2, [m_lo * 100, m_hi * 100], color="#4a4944",
+             lw=1.4, zorder=4)
+    ax2.plot([xb[1]] * 2, [p_lo * 100, p_hi * 100], color="#4a4944",
+             lw=1.4, zorder=4)
+    ax2.text(xb[0], vals[0] + 3.6, "21.8%", ha="center", fontsize=10,
+             fontweight="bold", color=INK)
+    ax2.text(xb[1], p_hi * 100 + 1.6, "18.3%", ha="center", fontsize=10,
+             fontweight="bold", color=INK)
+    ax2.text(xb[0], -2.6, "Manual\nall 1,951 events", ha="center", va="top",
+             fontsize=7.6, color=INK)
+    ax2.text(xb[1], -2.6, "Pipeline\ndirection-known,\n268 events",
+             ha="center", va="top", fontsize=7.6, color=INK)
+    ax2.annotate("", xy=(xb[1] + 0.34, 21.8), xytext=(xb[1] + 0.34, 13.9),
+                 arrowprops=dict(arrowstyle="-", lw=1.0, color=MUTED))
+    ax2.text(xb[1] + 0.40, 17.8, "pipeline 95% CI\nincludes the\nmanual rate",
+             fontsize=6.8, color=MUTED, va="center")
+    ax2.text(0.5, 0.955, "All 49 pipeline wrong-way calls were\n"
+             "individually confirmed by visual review.",
+             transform=ax2.transAxes, fontsize=7.6, color=INK, ha="center",
+             va="top",
+             bbox=dict(boxstyle="round,pad=0.45", facecolor="#f4f2ee",
+                       edgecolor="#c9c8c4", linewidth=0.8))
+    ax2.set_xlim(-0.55, 1.85)
+    ax2.set_ylim(0, 40)
+    ax2.set_xticks([])
+    ax2.set_ylabel("Pooled wrong-way share of events (%)", fontsize=8.5)
+    ax2.set_title("(b) Pooled wrong-way rate: manual vs. pipeline",
+                  fontsize=9, loc="left")
 
     for ax in (ax1, ax2):
         ax.tick_params(labelsize=7.5)
