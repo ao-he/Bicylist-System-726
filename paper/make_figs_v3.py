@@ -4,7 +4,7 @@
 Reads data/manual_counts_new.csv (frozen manual benchmark) plus the frozen
 pipeline counts. Outputs paper/fig_validation.png and paper/fig_scatter_v3.png.
 Prints verification stats that must match the frozen benchmark numbers:
-1,951 manual / 1,823 pipe events, Spearman rho = 0.88 (ours) / 0.79 (TBAG).
+1,943 manual / 1,823 pipe events, Spearman rho = 0.87 (ours) / 0.79 (TBAG).
 
 Palette (validated, light surface): blue #2a78d6, green #1baf7a. Green fails
 3:1 contrast on white, so every green mark also carries a distinct shape and
@@ -121,16 +121,16 @@ def fig_validation(rows, out):
         ax2.text(hi * 100 + 1.2, y, f"{v:.0f}%", va="center", fontsize=6.2,
                  color=MUTED)
     ax2.axhline(1.75, color="#c9c8c4", lw=0.8, zorder=2)
-    m_lo, m_hi = wilson_ci(426, 1951)
+    m_lo, m_hi = wilson_ci(418, 1943)
     p_lo, p_hi = wilson_ci(49, 268)
-    ax2.barh(1.05, 21.8, height=0.62, color=BLUE, zorder=3)
+    ax2.barh(1.05, 21.5, height=0.62, color=BLUE, zorder=3)
     ax2.barh(0.25, 18.3, height=0.62, color=GREEN, zorder=3,
              label="Pipeline, direction-known")
     ax2.plot([m_lo * 100, m_hi * 100], [1.05, 1.05], color="#4a4944",
              lw=0.9, zorder=4)
     ax2.plot([p_lo * 100, p_hi * 100], [0.25, 0.25], color="#4a4944",
              lw=0.9, zorder=4)
-    ax2.text(m_hi * 100 + 1.2, 1.05, "21.8%", va="center", fontsize=6.8,
+    ax2.text(m_hi * 100 + 1.2, 1.05, "21.5%", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
     ax2.text(p_hi * 100 + 1.2, 0.25, "18.3%", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
@@ -157,7 +157,7 @@ def fig_validation(rows, out):
 
     n_man, n_pipe = sum(manual), sum(pipe)
     print(f"validation: manual {int(n_man)} / pipe {int(n_pipe)} "
-          f"(expect 1951 / 1823), recall {n_pipe / n_man:.3f}")
+          f"(expect 1943 / 1823), count ratio {n_pipe / n_man:.3f}")
     r = stats.pearsonr(manual, pipe)
     pa = sum(v[0] for v in PIPE_WW.values())
     pn = sum(v[1] for v in PIPE_WW.values())
@@ -173,7 +173,7 @@ def fig_scatter(rows, out):
     rho_us = stats.spearmanr(sw, ww)
     rho_tb = stats.spearmanr(TBAG_SW, TBAG_WW)
     print(f"ours   Spearman rho = {rho_us.statistic:.3f} p = {rho_us.pvalue:.1e}"
-          f" n = {len(sw)} (expect 0.88, 6.4e-06, 16)")
+          f" n = {len(sw)} (expect 0.867, 1.4e-05, 16)")
     print(f"TBAG   Spearman rho = {rho_tb.statistic:.3f} p = {rho_tb.pvalue:.1e}"
           f" (expect 0.788, 3e-04)")
 
