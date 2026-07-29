@@ -20,6 +20,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+plt.rcParams["font.family"] = "STIXGeneral"
+plt.rcParams["mathtext.fontset"] = "stix"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSV = os.path.join(HERE, "..", "data", "manual_counts_new.csv")
 
@@ -33,6 +36,13 @@ PIPE = {"02": 4, "04": 220, "04-2": 146, "06": 74, "08": 183, "10": 143,
         "11": 58, "12": 89, "13": 62, "15": 91, "16": 61, "17": 458,
         "18": 17, "19": 55, "19-2": 31, "21": 10, "23": 91, "24": 27,
         "25": 3}
+
+# Frozen pipeline direction results (against, dir_known) per deployment.
+PIPE_WW = {"02": (0, 1), "04": (11, 35), "04-2": (6, 16), "06": (0, 2),
+           "08": (6, 9), "10": (1, 4), "11": (1, 2), "12": (2, 11),
+           "13": (1, 8), "15": (2, 11), "16": (5, 11), "17": (5, 115),
+           "18": (0, 0), "19": (2, 15), "19-2": (1, 3), "21": (0, 2),
+           "23": (6, 21), "24": (0, 2), "25": (0, 0)}
 
 # TBAG 2024 volunteer counts, 16 intersections (LocationID order
 # 102,106,113,114,115,119,120,121,126,131,133,135,139,157,160,172).
@@ -90,10 +100,19 @@ def fig_validation(rows, out):
     for yi, r, (lo, hi) in zip(y, ww_rate, ci):
         ax2.plot([lo * 100, hi * 100], [yi, yi], color=MUTED, lw=1.4, zorder=2)
     ax2.scatter([r * 100 for r in ww_rate], y, marker="D", s=26, color=BLUE,
-                zorder=3, label="Manual WW rate")
+                zorder=3)
     for yi, r in zip(y, ww_rate):
         ax2.text(r * 100, yi + 0.32, f"{r * 100:.0f}", ha="center",
                  fontsize=6.2, color=INK)
+    py, pr = [], []
+    for yi, l in zip(y, locs):
+        a, n = PIPE_WW[l]
+        if n >= 8:
+            lo, hi = wilson_ci(a, n)
+            ax2.plot([lo * 100, hi * 100], [yi - 0.30, yi - 0.30],
+                     color=GREEN, lw=1.1, alpha=0.55, zorder=2)
+            py.append(yi - 0.30); pr.append(a / n * 100)
+    ax2.scatter(pr, py, marker="o", s=18, color=GREEN, zorder=3)
     ax2.set_yticks(y, ["" for _ in locs])
     ax2.set_xlabel("Wrong-way share of events (%)", fontsize=8.5)
     ax2.set_title("(b) Wrong-way rate (Wilson 95% CI)", fontsize=9, loc="left")
@@ -111,6 +130,10 @@ def fig_validation(rows, out):
     print(f"validation: manual {int(n_man)} / pipe {int(n_pipe)} "
           f"(expect 1951 / 1823), recall {n_pipe / n_man:.3f}")
     r = stats.pearsonr(manual, pipe)
+    pa = sum(v[0] for v in PIPE_WW.values())
+    pn = sum(v[1] for v in PIPE_WW.values())
+    print(f"pipeline direction pooled: {pa}/{pn} = {pa/pn:.3f} "
+          f"(expect 49/268 = 0.183)")
     print(f"count Pearson r = {r.statistic:.3f} (expect 0.991)")
 
 
