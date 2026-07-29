@@ -4,7 +4,9 @@
 Reads data/manual_counts_new.csv (frozen manual benchmark) plus the frozen
 pipeline counts. Outputs paper/fig_validation.png and paper/fig_scatter_v3.png.
 Prints verification stats that must match the frozen benchmark numbers:
-1,943 manual / 1,823 pipe events, Spearman rho = 0.87 (ours) / 0.79 (TBAG).
+count validation 1,823 pipe vs 1,963 full manual review (92.9 percent;
+the pipeline does not exclude crossings, so panel (a) compares against
+manual counts that include them), Spearman rho = 0.87 (ours) / 0.79 (TBAG).
 
 Palette (validated, light surface): blue #2a78d6, green #1baf7a. Green fails
 3:1 contrast on white, so every green mark also carries a distinct shape and
@@ -53,6 +55,10 @@ TBAG_WW = [21, 9, 16, 12, 38, 25, 9, 11, 32, 22, 10, 21, 2, 25, 3, 1]
 # Excluded from the correlation (n<10 manual events): 02, 21, 25.
 SCATTER_EXCLUDE = {"02", "21", "25"}
 
+# Roadway crossings excluded from the manual analysis set but counted by
+# the pipeline; added back for the count comparison in panel (a).
+CROSSINGS = {"04": 3, "15": 8, "21": 9}
+
 
 def wilson_ci(k, n, z=1.96):
     if n == 0:
@@ -74,7 +80,7 @@ def load_manual():
 
 def fig_validation(rows, out):
     locs = [r["loc"] for r in rows]
-    manual = [r["total"] for r in rows]
+    manual = [r["total"] + CROSSINGS.get(r["loc"], 0) for r in rows]
     pipe = [PIPE[l] for l in locs]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.7, 3.35), dpi=300,
@@ -159,13 +165,13 @@ def fig_validation(rows, out):
 
     n_man, n_pipe = sum(manual), sum(pipe)
     print(f"validation: manual {int(n_man)} / pipe {int(n_pipe)} "
-          f"(expect 1943 / 1823), count ratio {n_pipe / n_man:.3f}")
+          f"(expect 1963 / 1823), count ratio {n_pipe / n_man:.3f} (expect 0.929)")
     r = stats.pearsonr(manual, pipe)
     pa = sum(v[0] for v in PIPE_WW.values())
     pn = sum(v[1] for v in PIPE_WW.values())
     print(f"pipeline direction pooled: {pa}/{pn} = {pa/pn:.3f} "
           f"(expect 49/268 = 0.183)")
-    print(f"count Pearson r = {r.statistic:.3f} (expect 0.991)")
+    print(f"count Pearson r = {r.statistic:.3f} (expect 0.992)")
 
 
 def fig_scatter(rows, out):
