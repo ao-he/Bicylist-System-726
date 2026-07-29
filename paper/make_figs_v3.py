@@ -176,6 +176,10 @@ def fig_scatter(rows, out):
           f" (expect 0.788, 3e-04)")
 
     fig, ax = plt.subplots(figsize=(5.4, 4.2), dpi=300)
+    from matplotlib.patches import FancyArrowPatch
+    ax.add_patch(FancyArrowPatch((6, 3), (84, 43), arrowstyle="-|>",
+                 mutation_scale=26, linewidth=5.5, color="#8a8884",
+                 alpha=0.22, zorder=1))
     for xs_f, ys_f, c in ((sw, ww, BLUE), (TBAG_SW, TBAG_WW, GREEN)):
         b1, b0 = np.polyfit(xs_f, ys_f, 1)
         xf = np.array([min(xs_f), max(xs_f)])
