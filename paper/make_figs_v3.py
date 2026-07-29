@@ -116,7 +116,7 @@ def fig_validation(rows, out):
         lo, hi = wilson_ci(r["ww_total"], r["total"])
         ax2.plot([lo * 100, hi * 100], [y, y], color="#4a4944", lw=0.9,
                  alpha=0.75, zorder=4)
-        ax2.text(hi * 100 + 1.2, y, f"{v:.0f}", va="center", fontsize=6.2,
+        ax2.text(hi * 100 + 1.2, y, f"{v:.0f}%", va="center", fontsize=6.2,
                  color=MUTED)
     ax2.axhline(1.75, color="#c9c8c4", lw=0.8, zorder=2)
     m_lo, m_hi = wilson_ci(426, 1951)
@@ -128,12 +128,13 @@ def fig_validation(rows, out):
              lw=0.9, zorder=4)
     ax2.plot([p_lo * 100, p_hi * 100], [0.25, 0.25], color="#4a4944",
              lw=0.9, zorder=4)
-    ax2.text(m_hi * 100 + 1.2, 1.05, "21.8", va="center", fontsize=6.8,
+    ax2.text(m_hi * 100 + 1.2, 1.05, "21.8%", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
-    ax2.text(p_hi * 100 + 1.2, 0.25, "18.3", va="center", fontsize=6.8,
+    ax2.text(p_hi * 100 + 1.2, 0.25, "18.3%", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
     ax2.set_yticks(list(ys_b) + [1.05, 0.25],
-                   [r["loc"] for r in per] + ["Pooled", ""], fontsize=6.4)
+                   [f"Loc {r['loc']}" for r in per] + ["Pooled", ""],
+                   fontsize=6.4)
     ax2.set_xlim(0, 100)
     ax2.set_ylim(-0.55, len(per) + 3.0)
     ax2.set_xlabel("Wrong-way share of events (%)", fontsize=8.5)
