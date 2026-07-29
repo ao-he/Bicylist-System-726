@@ -198,6 +198,9 @@ def fig_scatter(rows, out):
     ax.grid(color="#e6e5e1", lw=0.6, zorder=0)
     ax.set_axisbelow(True)
     ax.legend(fontsize=7.5, frameon=False, loc="upper left")
+    ax.text(101, 2.5, "More sidewalk riding goes with more\nwrong-way riding, in both datasets",
+            ha="right", va="bottom", fontsize=7.3, color=MUTED,
+            style="italic")
     ax.set_xlim(-3, 103)
     ax.set_ylim(-2, 52)
     fig.savefig(out, bbox_inches="tight")
