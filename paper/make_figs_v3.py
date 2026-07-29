@@ -110,7 +110,9 @@ def fig_validation(rows, out):
     per = sorted(rows, key=lambda r: r["ww_total"] / r["total"])
     ys_b = np.arange(len(per)) + 2.6
     vals = [100 * r["ww_total"] / r["total"] for r in per]
-    ax2.barh(ys_b, vals, height=0.62, color=BLUE, zorder=3,
+    small = {"02", "21", "25"}
+    cols = [BLUE if r["loc"] not in small else "#a8c8ee" for r in per]
+    ax2.barh(ys_b, vals, height=0.62, color=cols, zorder=3,
              label="Manual, per deployment")
     for y, r, v in zip(ys_b, per, vals):
         lo, hi = wilson_ci(r["ww_total"], r["total"])
@@ -176,10 +178,6 @@ def fig_scatter(rows, out):
           f" (expect 0.788, 3e-04)")
 
     fig, ax = plt.subplots(figsize=(5.4, 4.2), dpi=300)
-    from matplotlib.patches import FancyArrowPatch
-    ax.add_patch(FancyArrowPatch((6, 3), (84, 43), arrowstyle="-|>",
-                 mutation_scale=26, linewidth=5.5, color="#8a8884",
-                 alpha=0.22, zorder=1))
     for xs_f, ys_f, c in ((sw, ww, BLUE), (TBAG_SW, TBAG_WW, GREEN)):
         b1, b0 = np.polyfit(xs_f, ys_f, 1)
         xf = np.array([min(xs_f), max(xs_f)])
