@@ -90,11 +90,14 @@ def fig_validation(rows, out):
     ax1.set_xticks(ticks, [str(t) for t in ticks])
     ax1.set_yticks(ticks, [str(t) for t in ticks])
     ax1.minorticks_off()
+    label_off = {"02": (5, 4), "21": (5, 4), "25": (5, -9), "06": (5, -9),
+                 "18": (-28, 4), "19": (5, -9), "19-2": (-40, 4)}
     for l, m, p in zip(locs, manual, pipe):
-        if l in ("17", "21", "02", "06"):
+        ratio = p / m
+        if ratio < 0.8 or ratio > 1.25:
+            dx, dy = label_off.get(l, (5, 4))
             ax1.annotate(f"Loc {l}", (m, p), textcoords="offset points",
-                         xytext=(5, -9 if l in ("06",) else 5), fontsize=6.8,
-                         color=INK)
+                         xytext=(dx, dy), fontsize=6.8, color=INK)
     ax1.text(0.05, 0.93, "$r$ = 0.99", transform=ax1.transAxes, fontsize=9)
     ax1.text(0.97, 0.03, "below line: pipeline undercounts",
              transform=ax1.transAxes, fontsize=6.8, ha="right", color=MUTED)
@@ -114,7 +117,7 @@ def fig_validation(rows, out):
         lo, hi = wilson_ci(a, n)
         ax2.plot([mx, mx], [lo * 100, hi * 100], color=BLUE, lw=1.1,
                  alpha=0.45, zorder=2)
-        ax2.scatter([mx], [py], s=30, facecolor=BLUE, alpha=0.85,
+        ax2.scatter([mx], [py], s=14 + 0.55 * n, facecolor=BLUE, alpha=0.85,
                     edgecolor="#1b4e8f", linewidth=0.8, zorder=3)
         if r["loc"] in ("08", "17"):
             ax2.annotate(f"Loc {r['loc']}", (mx, py),
@@ -125,6 +128,8 @@ def fig_validation(rows, out):
     ax2.annotate("pooled\n21.8 vs 18.3", (21.8, 18.3),
                  textcoords="offset points", xytext=(7, -16), fontsize=6.8,
                  color=INK)
+    ax2.text(0.97, 0.03, "marker area scales with direction calls\n($n$ = 8 to 115)",
+             transform=ax2.transAxes, fontsize=6.8, ha="right", color=MUTED)
     ax2.set_xlim(0, 75); ax2.set_ylim(0, 75)
     ax2.set_xlabel("Manual wrong-way rate, all events (%)", fontsize=8.5)
     ax2.set_ylabel("Pipeline wrong-way rate,\ndirection-known (%)", fontsize=8.5)
