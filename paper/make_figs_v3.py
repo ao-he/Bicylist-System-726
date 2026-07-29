@@ -19,6 +19,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 plt.rcParams["font.family"] = "STIXGeneral"
 plt.rcParams["mathtext.fontset"] = "stix"
@@ -94,7 +95,7 @@ def fig_validation(rows, out):
                  "18": (-28, 4), "19": (5, -9), "19-2": (-40, 4)}
     for l, m, p in zip(locs, manual, pipe):
         ratio = p / m
-        if ratio < 0.8 or ratio > 1.25:
+        if ratio < 0.8 or ratio > 1.2:
             dx, dy = label_off.get(l, (5, 4))
             ax1.annotate(f"Loc {l}", (m, p), textcoords="offset points",
                          xytext=(dx, dy), fontsize=6.8, color=INK)
@@ -112,8 +113,7 @@ def fig_validation(rows, out):
     vals = [100 * r["ww_total"] / r["total"] for r in per]
     small = {"02", "21", "25"}
     cols = [BLUE if r["loc"] not in small else "#a8c8ee" for r in per]
-    ax2.barh(ys_b, vals, height=0.62, color=cols, zorder=3,
-             label="Manual, per deployment")
+    ax2.barh(ys_b, vals, height=0.62, color=cols, zorder=3)
     for y, r, v in zip(ys_b, per, vals):
         lo, hi = wilson_ci(r["ww_total"], r["total"])
         ax2.plot([lo * 100, hi * 100], [y, y], color="#4a4944", lw=0.9,
@@ -124,8 +124,7 @@ def fig_validation(rows, out):
     m_lo, m_hi = wilson_ci(418, 1943)
     p_lo, p_hi = wilson_ci(49, 268)
     ax2.barh(1.05, 21.5, height=0.62, color=BLUE, zorder=3)
-    ax2.barh(0.25, 18.3, height=0.62, color=GREEN, zorder=3,
-             label="Pipeline, direction-known")
+    ax2.barh(0.25, 18.3, height=0.62, color=GREEN, zorder=3)
     ax2.plot([m_lo * 100, m_hi * 100], [1.05, 1.05], color="#4a4944",
              lw=0.9, zorder=4)
     ax2.plot([p_lo * 100, p_hi * 100], [0.25, 0.25], color="#4a4944",
@@ -140,7 +139,9 @@ def fig_validation(rows, out):
     ax2.set_xlim(0, 100)
     ax2.set_ylim(-0.55, len(per) + 3.0)
     ax2.set_xlabel("Wrong-way share of events (%)", fontsize=8.5)
-    ax2.legend(fontsize=6.8, frameon=False, loc="lower right")
+    ax2.legend(handles=[Patch(color=BLUE, label="Manual, per deployment"),
+                        Patch(color=GREEN, label="Pipeline, direction-known")],
+               fontsize=6.8, frameon=False, loc="lower right")
     ax2.text(0.985, 0.30, "whiskers: Wilson 95% CI",
              transform=ax2.transAxes, fontsize=6.4, color=MUTED, ha="right")
     ax2.set_title("(b) Manual wrong-way rate by deployment;\npooled comparison with the pipeline",
@@ -152,6 +153,7 @@ def fig_validation(rows, out):
         ax.set_axisbelow(True)
         ax.grid(color="#e6e5e1", lw=0.6)
     ax1.set_aspect("equal")
+    ax1.set_anchor("N")
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
