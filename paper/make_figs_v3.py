@@ -105,42 +105,41 @@ def fig_validation(rows, out):
     ax1.set_ylabel("Pipeline count (events)", fontsize=8.5)
     ax1.set_title("(a) Event counts per deployment", fontsize=9, loc="left")
 
-    # (b) per-deployment manual wrong-way rates (all 19), then the pooled
-    # manual-vs-pipeline comparison at the right.
+    # (b) horizontal: manual wrong-way rate per deployment (all 19, with
+    # value labels), pooled manual-vs-pipeline pair at the bottom.
     per = sorted(rows, key=lambda r: r["ww_total"] / r["total"])
-    xs_b = np.arange(len(per))
+    ys_b = np.arange(len(per)) + 2.6
     vals = [100 * r["ww_total"] / r["total"] for r in per]
-    ax2.bar(xs_b, vals, width=0.62, color=BLUE, zorder=3,
-            label="Manual, per deployment")
-    for x, r in zip(xs_b, per):
+    ax2.barh(ys_b, vals, height=0.62, color=BLUE, zorder=3,
+             label="Manual, per deployment")
+    for y, r, v in zip(ys_b, per, vals):
         lo, hi = wilson_ci(r["ww_total"], r["total"])
-        ax2.plot([x, x], [lo * 100, hi * 100], color="#4a4944", lw=0.9,
+        ax2.plot([lo * 100, hi * 100], [y, y], color="#4a4944", lw=0.9,
                  alpha=0.75, zorder=4)
-    xp = len(per) + 1.3
-    ax2.axvline(len(per) + 0.15, color="#c9c8c4", lw=0.8, zorder=2)
+        ax2.text(hi * 100 + 1.2, y, f"{v:.0f}", va="center", fontsize=6.2,
+                 color=MUTED)
+    ax2.axhline(1.75, color="#c9c8c4", lw=0.8, zorder=2)
     m_lo, m_hi = wilson_ci(426, 1951)
     p_lo, p_hi = wilson_ci(49, 268)
-    ax2.bar(xp - 0.36, 21.8, width=0.62, color=BLUE, zorder=3)
-    ax2.bar(xp + 0.36, 18.3, width=0.62, color=GREEN, zorder=3,
-            label="Pipeline, direction-known")
-    ax2.plot([xp - 0.36] * 2, [m_lo * 100, m_hi * 100], color="#4a4944",
+    ax2.barh(1.05, 21.8, height=0.62, color=BLUE, zorder=3)
+    ax2.barh(0.25, 18.3, height=0.62, color=GREEN, zorder=3,
+             label="Pipeline, direction-known")
+    ax2.plot([m_lo * 100, m_hi * 100], [1.05, 1.05], color="#4a4944",
              lw=0.9, zorder=4)
-    ax2.plot([xp + 0.36] * 2, [p_lo * 100, p_hi * 100], color="#4a4944",
+    ax2.plot([p_lo * 100, p_hi * 100], [0.25, 0.25], color="#4a4944",
              lw=0.9, zorder=4)
-    ax2.text(xp - 0.72, 22.6, "21.8", ha="right", fontsize=6.8,
+    ax2.text(m_hi * 100 + 1.2, 1.05, "21.8", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
-    ax2.text(xp + 0.72, 19.1, "18.3", ha="left", fontsize=6.8,
+    ax2.text(p_hi * 100 + 1.2, 0.25, "18.3", va="center", fontsize=6.8,
              fontweight="bold", color=INK)
-    ticks = list(xs_b) + [xp]
-    labels = [r["loc"] for r in per] + ["Pooled"]
-    ax2.set_xticks(ticks, labels, fontsize=6.0, rotation=90)
-    ax2.set_xlim(-0.8, xp + 1.1)
-    ax2.set_ylim(0, 85)
-    ax2.set_ylabel("Wrong-way share of events (%)", fontsize=8.5)
-    ax2.set_xlabel("Deployment (Loc), sorted by wrong-way rate", fontsize=8.5)
-    ax2.legend(fontsize=6.8, frameon=False, loc="upper left")
-    ax2.text(0.02, 0.80, "whiskers: Wilson 95% CI",
-             transform=ax2.transAxes, fontsize=6.4, color=MUTED)
+    ax2.set_yticks(list(ys_b) + [1.05, 0.25],
+                   [r["loc"] for r in per] + ["Pooled", ""], fontsize=6.4)
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.55, len(per) + 3.0)
+    ax2.set_xlabel("Wrong-way share of events (%)", fontsize=8.5)
+    ax2.legend(fontsize=6.8, frameon=False, loc="lower right")
+    ax2.text(0.985, 0.30, "whiskers: Wilson 95% CI",
+             transform=ax2.transAxes, fontsize=6.4, color=MUTED, ha="right")
     ax2.set_title("(b) Wrong-way rate by deployment and pooled",
                   fontsize=9, loc="left")
 
