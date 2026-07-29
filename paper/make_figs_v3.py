@@ -176,18 +176,30 @@ def fig_scatter(rows, out):
           f" (expect 0.788, 3e-04)")
 
     fig, ax = plt.subplots(figsize=(5.4, 4.2), dpi=300)
-    ax.scatter(sw, ww, s=42, color=BLUE, marker="o", zorder=3,
+    for xs_f, ys_f, c in ((sw, ww, BLUE), (TBAG_SW, TBAG_WW, GREEN)):
+        b1, b0 = np.polyfit(xs_f, ys_f, 1)
+        xf = np.array([min(xs_f), max(xs_f)])
+        ax.plot(xf, b0 + b1 * xf, color=c, lw=1.1, ls=(0, (4, 3)),
+                alpha=0.55, zorder=2)
+    ax.scatter(sw, ww, s=42, facecolor=BLUE, alpha=0.85, marker="o",
+               edgecolor="#1b4e8f", linewidth=0.8, zorder=3,
                label=rf"This study (n={len(sw)}), $\rho$ = {rho_us.statistic:.2f}")
-    ax.scatter(TBAG_SW, TBAG_WW, s=42, color=GREEN, marker="D", zorder=3,
+    ax.scatter(TBAG_SW, TBAG_WW, s=42, facecolor=GREEN, alpha=0.85,
+               marker="D", edgecolor="#0e7a54", linewidth=0.8, zorder=3,
                label=rf"TBAG 2024 (n=16), $\rho$ = {rho_tb.statistic:.2f}")
-    ax.set_xlabel("Sidewalk share of cyclist events (%)", fontsize=9)
-    ax.set_ylabel("Wrong-way share of events (%)", fontsize=9)
-    ax.tick_params(labelsize=8)
+    for r, x, y in zip(sub, sw, ww):
+        if r["loc"] in ("17", "08"):
+            ax.annotate(f"Loc {r['loc']}", (x, y), textcoords="offset points",
+                        xytext=(6, 3), fontsize=6.8, color=INK)
+    ax.set_xlabel("Sidewalk share of cyclist events (%)", fontsize=8.5)
+    ax.set_ylabel("Wrong-way share of events (%)", fontsize=8.5)
+    ax.tick_params(labelsize=7.5)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(color="#e6e5e1", lw=0.7, zorder=0)
+    ax.grid(color="#e6e5e1", lw=0.6, zorder=0)
     ax.set_axisbelow(True)
-    ax.legend(fontsize=7.8, frameon=False, loc="lower right")
+    ax.legend(fontsize=7.5, frameon=False, loc="upper left")
     ax.set_xlim(-3, 103)
+    ax.set_ylim(-2, 52)
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
